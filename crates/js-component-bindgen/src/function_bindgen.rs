@@ -1,4 +1,6 @@
+use crate::configuration::{Configuration, TypeExtensions as _};
 use crate::intrinsics::Intrinsic;
+use crate::names::LocalNames;
 use crate::source;
 use crate::{uwrite, uwriteln};
 use heck::*;
@@ -86,6 +88,8 @@ pub struct FunctionBindgen<'a> {
     pub callee: &'a str,
     pub callee_resource_dynamic: bool,
     pub resolve: &'a Resolve,
+    pub local_names: &'a mut LocalNames,
+    pub configuration: Configuration,
 }
 
 impl FunctionBindgen<'_> {
@@ -350,12 +354,24 @@ impl Bindgen for FunctionBindgen<'_> {
                 results.push(format!("{} ? 1 : 0", operands[0]));
             }
 
-            Instruction::RecordLower { record, .. } => {
+            Instruction::RecordLower { record, ty, .. } => {
                 // use destructuring field access to get each
                 // field individually.
                 let tmp = self.tmp();
                 let mut expr = "var {".to_string();
                 for (i, field) in record.fields.iter().enumerate() {
+                    if self
+                        .configuration
+                        .get_member(&self.resolve, ty, &field.name)
+                        .list_of_tuple_as_dictionary()
+                    {
+                        if let Some(_) = field
+                            .ty
+                            .value_type_of_list_of_tuple_interpretable_as_dictionary(&self.resolve)
+                        {
+                            unimplemented!("Lowering a list of tuple as dictionary");
+                        }
+                    }
                     if i > 0 {
                         expr.push_str(", ");
                     }
@@ -368,12 +384,29 @@ impl Bindgen for FunctionBindgen<'_> {
                 uwrite!(self.src, "{} }} = {};\n", expr, operands[0]);
             }
 
-            Instruction::RecordLift { record, .. } => {
+            Instruction::RecordLift { record, ty, .. } => {
                 // records are represented as plain objects, so we
                 // make a new object and set all the fields with an object
                 // literal.
                 let mut result = "{\n".to_string();
                 for (field, op) in record.fields.iter().zip(operands) {
+                    if self
+                        .configuration
+                        .get_member(&self.resolve, ty, &field.name)
+                        .list_of_tuple_as_dictionary()
+                    {
+                        if let Some(_) = field
+                            .ty
+                            .value_type_of_list_of_tuple_interpretable_as_dictionary(&self.resolve)
+                        {
+                            result.push_str(&format!(
+                                "{}: {}.reduce((acc, val) => {{ acc[val[0]] = val[1]; return acc; }}, {{}}),\n",
+                                field.name.to_lower_camel_case(),
+                                op
+                            ));
+                            continue;
+                        }
+                    }
                     result.push_str(&format!("{}: {},\n", field.name.to_lower_camel_case(), op));
                 }
                 result.push('}');
@@ -487,6 +520,7 @@ impl Bindgen for FunctionBindgen<'_> {
                 variant,
                 results: result_types,
                 name,
+                ty,
                 ..
             } => {
                 let blocks = self
@@ -497,41 +531,55 @@ impl Bindgen for FunctionBindgen<'_> {
                 let op = &operands[0];
                 uwriteln!(self.src, "var variant{tmp} = {op};");
 
-                for i in 0..result_types.len() {
-                    uwriteln!(self.src, "let variant{tmp}_{i};");
-                    results.push(format!("variant{}_{}", tmp, i));
-                }
-
-                let expr_to_match = format!("variant{tmp}.tag");
-
-                uwriteln!(self.src, "switch ({expr_to_match}) {{");
-                for (case, (block, block_results)) in variant.cases.iter().zip(blocks) {
-                    uwriteln!(self.src, "case '{}': {{", case.name.as_str());
-                    if case.ty.is_some() {
-                        uwriteln!(self.src, "const e = variant{tmp}.val;");
+                if self
+                    .configuration
+                    .get(resolve, ty)
+                    .variant_as_direct_union_of_resource_classes()
+                {
+                    if let Some(_) = Type::Id(*ty)
+                        .variant_case_type_defs_where_they_are_all_handles(self.resolve)
+                    {
+                        unimplemented!("Lowering a variant as direct union of resource classes");
                     }
-                    self.src.push_str(&block);
-
-                    for (i, result) in block_results.iter().enumerate() {
-                        uwriteln!(self.src, "variant{tmp}_{i} = {result};");
+                } else {
+                    for i in 0..result_types.len() {
+                        uwriteln!(self.src, "let variant{tmp}_{i};");
+                        results.push(format!("variant{}_{}", tmp, i));
                     }
+
+                    let expr_to_match = format!("variant{tmp}.tag");
+
+                    uwriteln!(self.src, "switch ({expr_to_match}) {{");
+                    for (case, (block, block_results)) in variant.cases.iter().zip(blocks) {
+                        uwriteln!(self.src, "case '{}': {{", case.name.as_str());
+                        if case.ty.is_some() {
+                            uwriteln!(self.src, "const e = variant{tmp}.val;");
+                        }
+                        self.src.push_str(&block);
+
+                        for (i, result) in block_results.iter().enumerate() {
+                            uwriteln!(self.src, "variant{tmp}_{i} = {result};");
+                        }
+                        uwriteln!(
+                            self.src,
+                            "break;
+                        }}"
+                        );
+                    }
+                    let variant_name = name.to_upper_camel_case();
                     uwriteln!(
                         self.src,
-                        "break;
-                        }}"
-                    );
-                }
-                let variant_name = name.to_upper_camel_case();
-                uwriteln!(
-                    self.src,
-                    r#"default: {{
+                        r#"default: {{
                         throw new TypeError(`invalid variant tag value \`${{JSON.stringify({expr_to_match})}}\` (received \`${{variant{tmp}}}\`) specified for \`{variant_name}\``);
                     }}"#,
-                );
-                uwriteln!(self.src, "}}");
+                    );
+                    uwriteln!(self.src, "}}");
+                }
             }
 
-            Instruction::VariantLift { variant, name, .. } => {
+            Instruction::VariantLift {
+                variant, name, ty, ..
+            } => {
                 let blocks = self
                     .blocks
                     .drain(self.blocks.len() - variant.cases.len()..)
@@ -546,30 +594,54 @@ impl Bindgen for FunctionBindgen<'_> {
                     switch ({op}) {{"
                 );
 
-                for (i, (case, (block, block_results))) in
-                    variant.cases.iter().zip(blocks).enumerate()
+                if self
+                    .configuration
+                    .get(resolve, ty)
+                    .variant_as_direct_union_of_resource_classes()
                 {
-                    let tag = case.name.as_str();
-                    uwriteln!(
-                        self.src,
-                        "case {i}: {{
+                    if let Some(_) = Type::Id(*ty)
+                        .variant_case_type_defs_where_they_are_all_handles(self.resolve)
+                    {
+                        for (i, (block, block_results)) in blocks.iter().enumerate() {
+                            assert!(block_results.len() == 1);
+                            uwriteln!(
+                                self.src,
+                                "case {i}: {{
+                                    {block}\
+                                    variant{tmp} = {};
+                                    break;
+                                }}",
+                                block_results[0]
+                            );
+                        }
+                    }
+                } else {
+                    for (i, (case, (block, block_results))) in
+                        variant.cases.iter().zip(blocks).enumerate()
+                    {
+                        let tag = case.name.as_str();
+                        uwriteln!(
+                            self.src,
+                            "case {i}: {{
                             {block}\
                             variant{tmp} = {{
                                 tag: '{tag}',"
-                    );
-                    if case.ty.is_some() {
-                        assert!(block_results.len() == 1);
-                        uwriteln!(self.src, "   val: {}", block_results[0]);
-                    } else {
-                        assert!(block_results.is_empty());
+                        );
+                        if case.ty.is_some() {
+                            assert!(block_results.len() == 1);
+                            uwriteln!(self.src, "   val: {}", block_results[0]);
+                        } else {
+                            assert!(block_results.is_empty());
+                        }
+                        uwriteln!(
+                            self.src,
+                            "   }};
+                            break;
+                            }}"
+                        );
                     }
-                    uwriteln!(
-                        self.src,
-                        "   }};
-                        break;
-                        }}"
-                    );
                 }
+
                 let variant_name = name.to_upper_camel_case();
                 if !self.valid_lifting_optimization {
                     uwriteln!(
@@ -806,80 +878,100 @@ impl Bindgen for FunctionBindgen<'_> {
                 results.push(format!("variant{tmp}"));
             }
 
-            // Lowers an enum in accordance with https://webidl.spec.whatwg.org/#es-enumeration.
-            Instruction::EnumLower { name, enum_, .. } => {
-                let tmp = self.tmp();
+            Instruction::EnumLower { name, enum_, ty } => {
+                if self
+                    .configuration
+                    .get(resolve, ty)
+                    .enum_as_typescript_enum()
+                {
+                    let name = name.to_lower_camel_case();
+                    let cabi_enum_name = format!("{name}CABI");
+                    results.push(format!("{cabi_enum_name}[{op}]", op = operands[0]))
+                } else {
+                    // Lowers an enum in accordance with https://webidl.spec.whatwg.org/#es-enumeration.
+                    let tmp = self.tmp();
 
-                let op = &operands[0];
-                uwriteln!(self.src, "var val{tmp} = {op};");
+                    let op = &operands[0];
+                    uwriteln!(self.src, "var val{tmp} = {op};");
 
-                // Declare a variable to hold the result.
-                uwriteln!(
-                    self.src,
-                    "let enum{tmp};
-                    switch (val{tmp}) {{"
-                );
-                for (i, case) in enum_.cases.iter().enumerate() {
+                    // Declare a variable to hold the result.
                     uwriteln!(
                         self.src,
-                        "case '{case}': {{
-                            enum{tmp} = {i};
-                            break;
-                        }}",
-                        case = case.name
+                        "let enum{tmp};
+                            switch (val{tmp}) {{"
                     );
-                }
-                uwriteln!(self.src, "default: {{");
-                if !self.valid_lifting_optimization {
+                    for (i, case) in enum_.cases.iter().enumerate() {
+                        uwriteln!(
+                            self.src,
+                            "case '{case}': {{
+                                    enum{tmp} = {i};
+                                    break;
+                                }}",
+                            case = case.name
+                        );
+                    }
+                    uwriteln!(self.src, "default: {{");
+                    if !self.valid_lifting_optimization {
+                        uwriteln!(
+                            self.src,
+                            "if (({op}) instanceof Error) {{
+                                    console.error({op});
+                                }}"
+                        );
+                    }
                     uwriteln!(
-                        self.src,
-                        "if (({op}) instanceof Error) {{
-                        console.error({op});
-                    }}"
-                    );
-                }
-                uwriteln!(
-                    self.src,
-                    "
-                            throw new TypeError(`\"${{val{tmp}}}\" is not one of the cases of {name}`);
-                        }}
-                    }}",
-                );
+                            self.src,
+                            "
+                                    throw new TypeError(`\"${{val{tmp}}}\" is not one of the cases of {name}`);
+                                }}
+                            }}",
+                        );
 
-                results.push(format!("enum{tmp}"));
+                    results.push(format!("enum{tmp}"));
+                }
             }
 
-            Instruction::EnumLift { name, enum_, .. } => {
-                let tmp = self.tmp();
+            Instruction::EnumLift { name, enum_, ty } => {
+                if self
+                    .configuration
+                    .get(resolve, ty)
+                    .enum_as_typescript_enum()
+                {
+                    let name = name.to_lower_camel_case();
+                    let cabi_enum_name = format!("{name}CABI");
+                    results.push(format!("{cabi_enum_name}[{op}]", op = operands[0]))
+                } else {
+                    let tmp = self.tmp();
 
-                uwriteln!(
-                    self.src,
-                    "let enum{tmp};
-                    switch ({}) {{",
-                    operands[0]
-                );
-                for (i, case) in enum_.cases.iter().enumerate() {
                     uwriteln!(
                         self.src,
-                        "case {i}: {{
-                            enum{tmp} = '{case}';
-                            break;
-                        }}",
-                        case = case.name
+                        "let enum{tmp};
+                            switch ({}) {{",
+                        operands[0]
                     );
-                }
-                if !self.valid_lifting_optimization {
-                    let name = name.to_upper_camel_case();
-                    uwriteln!(
-                        self.src,
-                        "default: {{
-                            throw new TypeError('invalid discriminant specified for {name}');
-                        }}",
-                    );
-                }
-                uwriteln!(self.src, "}}");
+                    for (i, case) in enum_.cases.iter().enumerate() {
+                        uwriteln!(
+                            self.src,
+                            "case {i}: {{
+                                    enum{tmp} = '{case}';
+                                    break;
+                                }}",
+                            case = case.name
+                        );
+                    }
+                    if !self.valid_lifting_optimization {
+                        let name = name.to_upper_camel_case();
+                        uwriteln!(
+                                self.src,
+                                "default: {{
+                                    throw new TypeError('invalid discriminant specified for {name}');
+                                }}",
+                            );
+                    }
+                    uwriteln!(self.src, "}}");
 
-                results.push(format!("enum{tmp}"));
+                    results.push(format!("enum{tmp}"));
+                }
             }
 
             Instruction::ListCanonLower { element, .. } => {

@@ -51,6 +51,7 @@ program.command('transpile')
   .option('-q, --quiet', 'disable output summary')
   .option('--no-namespaced-exports', 'disable namespaced exports for typescript compatibility')
   .option('--multi-memory', 'optimized output for Wasm multi-memory')
+  .option('--configuration-file <filename>', 'the path to a json5 configuration file to use for the code generation')
   .option('--', 'for --optimize, custom wasm-opt arguments (defaults to best size optimization)')
   .action(asyncAction(transpile));
 
@@ -79,7 +80,7 @@ program.command('run')
   .option('--jco-map <mappings...>', 'specifier=./output custom mappings for the component imports')
   .addOption(new Option('--jco-import-bindings [mode]', 'bindings mode for imports').choices(['js', 'optimized', 'hybrid', 'direct-optimized']).preset('js'))
   .argument('[args...]', 'Any CLI arguments for the component')
-  .action(asyncAction(async function run (cmd, args, opts, command) {
+  .action(asyncAction(async function run(cmd, args, opts, command) {
     // specially only allow help option in first position
     if (cmd === '--help' || cmd === '-h') {
       command.help();
@@ -103,7 +104,7 @@ program.command('serve')
   .addOption(new Option('--jco-import-bindings [mode]', 'bindings mode for imports').choices(['js', 'optimized', 'hybrid', 'direct-optimized']).preset('js'))
   .option('--jco-map <mappings...>', 'specifier=./output custom mappings for the component imports')
   .argument('[args...]', 'Any CLI arguments for the component')
-  .action(asyncAction(async function serve (cmd, args, opts, command) {
+  .action(asyncAction(async function serve(cmd, args, opts, command) {
     // specially only allow help option in first position
     if (cmd === '--help' || cmd === '-h') {
       command.help();
@@ -178,7 +179,7 @@ program.showHelpAfterError();
 
 program.parse();
 
-function asyncAction (cmd) {
+function asyncAction(cmd) {
   return function () {
     const args = [...arguments];
     (async () => {

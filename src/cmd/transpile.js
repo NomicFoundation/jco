@@ -14,7 +14,7 @@ import { platform } from 'node:process';
 
 const isWindows = platform === 'win32';
 
-export async function types (witPath, opts) {
+export async function types(witPath, opts) {
   const files = await typesComponent(witPath, opts);
   await writeFiles(files, opts.quiet ? false : 'Generated Type Files');
 }
@@ -30,7 +30,7 @@ export async function types (witPath, opts) {
  * }} opts
  * @returns {Promise<{ [filename: string]: Uint8Array }>}
  */
-export async function typesComponent (witPath, opts) {
+export async function typesComponent(witPath, opts) {
   await $init;
   const name = opts.name || (opts.worldName
     ? opts.worldName.split(':').pop().split('/').pop()
@@ -66,7 +66,7 @@ ${table(Object.entries(files).map(([name, source]) => [
   ]))}`);
 }
 
-export async function transpile (componentPath, opts, program) {
+export async function transpile(componentPath, opts, program) {
   const varIdx = program?.parent.rawArgs.indexOf('--');
   if (varIdx !== undefined && varIdx !== -1)
     opts.optArgs = program.parent.rawArgs.slice(varIdx + 1);
@@ -103,7 +103,7 @@ try {
  * @param {Uint8Array} source
  * @returns {Promise<Uint8Array>}
  */
-async function wasm2Js (source) {
+async function wasm2Js(source) {
   try {
     return await spawnIOTmp(WASM_2_JS, source, ['-Oz', '-o']);
   } catch (e) {
@@ -132,11 +132,12 @@ async function wasm2Js (source) {
  *   namespacedExports?: bool,
  *   outDir?: string,
  *   multiMemory?: bool,
+ *   configurationFile?: string,
  *   optArgs?: string[],
  * }} opts
  * @returns {Promise<{ files: { [filename: string]: Uint8Array }, imports: string[], exports: [string, 'function' | 'instance'][] }>}
  */
-export async function transpileComponent (component, opts = {}) {
+export async function transpileComponent(component, opts = {}) {
   await $init;
   if (opts.instantiation) opts.wasiShim = false;
 
@@ -183,6 +184,7 @@ export async function transpileComponent (component, opts = {}) {
     base64Cutoff: opts.js ? 0 : opts.base64Cutoff ?? 5000,
     noNamespacedExports: opts.namespacedExports === false,
     multiMemory: opts.multiMemory === true,
+    configurationFile: opts.configurationFile,
   });
 
   let outDir = (opts.outDir ?? '').replace(/\\/g, '/');
@@ -246,7 +248,7 @@ export async function transpileComponent (component, opts = {}) {
     const source = Buffer.from(jsFile[1]).toString('utf8')
       // update imports manging to match emscripten asm
       .replace(/exports(\d+)\['([^']+)']/g, (_, i, s) => `exports${i}['${asmMangle(s)}']`)
-      .replace(/export (async )?function instantiate/, '$1function _instantiate') ;
+      .replace(/export (async )?function instantiate/, '$1function _instantiate');
 
     // Collect all Wasm files.
     const wasmFiles = files.filter(([name]) => name.endsWith('.wasm'));
@@ -276,23 +278,22 @@ export async function transpileComponent (component, opts = {}) {
 
       const asms = asmFiles.map((asm, nth) => `function asm${nth}(imports) {
   ${
-    // strip and replace the asm instantiation wrapper
-    asm
-      .replace(/import \* as [^ ]+ from '[^']*';/g, '')
-      .replace('function asmFunc(imports) {', '')
-      .replace(/export var ([^ ]+) = ([^. ]+)\.([^ ]+);/g, '')
-      .replace(/var retasmFunc = [\s\S]*$/, '')
-      .replace(/var memasmFunc = new ArrayBuffer\(0\);/g, '')
-      .replace('memory.grow = __wasm_memory_grow;', '')
-      .trim()
-  }`)
+        // strip and replace the asm instantiation wrapper
+        asm
+          .replace(/import \* as [^ ]+ from '[^']*';/g, '')
+          .replace('function asmFunc(imports) {', '')
+          .replace(/export var ([^ ]+) = ([^. ]+)\.([^ ]+);/g, '')
+          .replace(/var retasmFunc = [\s\S]*$/, '')
+          .replace(/var memasmFunc = new ArrayBuffer\(0\);/g, '')
+          .replace('memory.grow = __wasm_memory_grow;', '')
+          .trim()
+        }`)
         .join(',\n');
 
       // The `instantiate` function.
       const instantiateFunction =
-        `${
-        withInstantiation ? 'export ' : ''
-}${async_}function instantiate(imports) {
+        `${withInstantiation ? 'export ' : ''
+        }${async_}function instantiate(imports) {
   const wasm_file_to_asm_index = {
     ${wasmFiles.map(([path], nth) => `'${basename(path)}': ${nth}`).join(',\n    ')}
   };
@@ -321,29 +322,26 @@ export async function transpileComponent (component, opts = {}) {
 ${
             // Exporting `$init` must come first to not break the transpiling tests.
             (opts.tlaCompat) ? '  $init,\n' : ''
-}${
-            exports
+            }${exports
               .map(([name]) => {
-                if (name === asmMangle(name)){
+                if (name === asmMangle(name)) {
                   return `  ${name},`;
                 } else {
                   return `  ${asmMangle(name)} as '${name}',`;
                 }
               })
               .join('\n')
-}
+            }
 }`
         }
 
         exportTrampolines =
-          `let ${
-          exports
+          `let ${exports
             .filter(([, ty]) => ty === 'function')
             .map(([name]) => `_${asmMangle(name)}`)
             .join(', ')
           };
-${
-          exports
+${exports
             .map(([name, ty]) => {
               if (ty === 'function') {
                 return `\nfunction ${asmMangle(name)} () {
@@ -359,31 +357,29 @@ ${
         autoInstantiate =
           `${async_}function $init() {
   ( {
-${
-          exports
-            .map( ([name, ty]) => {
+${exports
+            .map(([name, ty]) => {
               if (ty === 'function') {
-                return `    '${ name }': _${ asmMangle(name) },`;
+                return `    '${name}': _${asmMangle(name)},`;
               } else if (asmMangle(name) === name) {
-                return `    ${ name },`;
+                return `    ${name},`;
               } else {
-                return `    '${ name }': ${ asmMangle(name) },`;
+                return `    '${name}': ${asmMangle(name)},`;
               }
             })
             .join('\n')
           }
   } = ${await_}instantiate(
     {
-${
-          imports
-            .map((import_file, nth) => `      '${import_file}': import${ nth },`)
+${imports
+            .map((import_file, nth) => `      '${import_file}': import${nth},`)
             .join('\n')
           }
     }
   ) )
 }
 
-${ opts.tlaCompat ? '' : `${await_}$init();`}`;
+${opts.tlaCompat ? '' : `${await_}$init();`}`;
       }
 
       // Prepare the final generated code.
@@ -430,7 +426,7 @@ ${autoInstantiate}`;
 // emscripten asm mangles specifiers to be valid identifiers
 // for imports to match up we must do the same
 // See https://github.com/WebAssembly/binaryen/blob/main/src/asmjs/asmangle.cpp
-function asmMangle (name) {
+function asmMangle(name) {
   if (name === '')
     return '$';
 
@@ -511,7 +507,7 @@ function asmMangle (name) {
       }
       case 'c': {
         if (name == "case" || name == "continue" || name == "catch" ||
-            name == "const" || name == "class")
+          name == "const" || name == "class")
           return name + '_';
         break;
       }
@@ -522,20 +518,20 @@ function asmMangle (name) {
       }
       case 'e': {
         if (name == "else" || name == "enum" || name == "eval" || // to be sure
-            name == "export" || name == "extends")
+          name == "export" || name == "extends")
           return name + '_';
         break;
       }
       case 'f': {
         if (name == "for" || name == "false" || name == "finally" ||
-            name == "function")
+          name == "function")
           return name + '_';
         break;
       }
       case 'i': {
         if (name == "if" || name == "in" || name == "import" ||
-            name == "interface" || name == "implements" ||
-            name == "instanceof")
+          name == "interface" || name == "implements" ||
+          name == "instanceof")
           return name + '_';
         break;
       }
@@ -551,7 +547,7 @@ function asmMangle (name) {
       }
       case 'p': {
         if (name == "public" || name == "package" || name == "private" ||
-            name == "protected")
+          name == "protected")
           return name + '_';
         break;
       }
@@ -567,7 +563,7 @@ function asmMangle (name) {
       }
       case 't': {
         if (name == "try" || name == "this" || name == "true" ||
-            name == "throw" || name == "typeof")
+          name == "throw" || name == "typeof")
           return name + '_';
         break;
       }

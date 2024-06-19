@@ -64,6 +64,18 @@ export!(JsComponentBindgenComponent);
 impl Guest for JsComponentBindgenComponent {
     fn generate(component: Vec<u8>, options: GenerateOptions) -> Result<Transpiled, String> {
         let component = wat::parse_bytes(&component).map_err(|e| format!("{e}"))?;
+        let configuration = match &options.configuration_file {
+            Some(path) => {
+                let contents = std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read configuration file {path}"))
+                    .map_err(|e| e.to_string())?;
+                let configuration: js_component_bindgen::configuration::Configuration =
+                    serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+                println!("{:?}", configuration);
+                configuration
+            }
+            None => Default::default(),
+        };
         let opts = js_component_bindgen::TranspileOpts {
             name: options.name,
             no_typescript: options.no_typescript.unwrap_or(false),
@@ -78,6 +90,7 @@ impl Guest for JsComponentBindgenComponent {
             tracing: options.tracing.unwrap_or(false),
             no_namespaced_exports: options.no_namespaced_exports.unwrap_or(false),
             multi_memory: options.multi_memory.unwrap_or(false),
+            configuration,
             import_bindings: options.import_bindings.map(Into::into),
         };
 
@@ -159,6 +172,7 @@ impl Guest for JsComponentBindgenComponent {
             tracing: false,
             no_namespaced_exports: false,
             multi_memory: false,
+            configuration: Default::default(),
             import_bindings: None,
         };
 

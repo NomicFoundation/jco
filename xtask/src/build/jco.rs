@@ -83,6 +83,7 @@ fn transpile(component_path: &str, name: String, optimize: bool) -> Result<()> {
         tracing: false,
         no_namespaced_exports: true,
         multi_memory: true,
+        configuration: Default::default(),
         import_bindings: Some(BindingsMode::Js),
     };
 

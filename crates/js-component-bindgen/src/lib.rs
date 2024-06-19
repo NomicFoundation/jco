@@ -3,6 +3,7 @@ mod files;
 mod transpile_bindgen;
 mod ts_bindgen;
 
+pub mod configuration;
 pub mod esm_bindgen;
 pub mod function_bindgen;
 pub mod intrinsics;

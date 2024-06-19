@@ -1,6 +1,9 @@
 [package]
 name = "js-component-bindgen-component"
-authors = ["Alex Crichton <alex@alexcrichton.com>", "Guy Bedford <gbedford@fastly.com>"]
+authors = [
+    "Alex Crichton <alex@alexcrichton.com>",
+    "Guy Bedford <gbedford@fastly.com>",
+]
 publish = false
 
 version = { workspace = true }
@@ -12,6 +15,8 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = { workspace = true }
 js-component-bindgen = { path = "../js-component-bindgen" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 wasmtime-environ = { workspace = true }
 wit-bindgen = { workspace = true }
 wat = { workspace = true }

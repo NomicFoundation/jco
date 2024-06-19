@@ -1,3 +1,4 @@
+use crate::configuration::{Configuration, TypeExtensions as _};
 use crate::files::Files;
 use crate::function_bindgen::{array_ty, as_nullable, maybe_null};
 use crate::names::{is_js_identifier, maybe_quote_id, LocalNames, RESERVED_KEYWORDS};
@@ -24,6 +25,9 @@ struct TsBindgen {
     import_object: Source,
     /// TypeScript definitions which will become the export object
     export_object: Source,
+
+    // Whether enums should be generated as typescript types
+    configuration: Configuration,
 }
 
 /// Used to generate a `*.d.ts` file for each imported and exported interface for
@@ -39,6 +43,7 @@ struct TsInterface<'a> {
     needs_ty_result: bool,
     local_names: LocalNames,
     resources: BTreeMap<String, TsInterface<'a>>,
+    configuration: &'a Configuration,
 }
 
 pub fn ts_bindgen(
@@ -54,6 +59,7 @@ pub fn ts_bindgen(
         local_names: LocalNames::default(),
         import_object: Source::default(),
         export_object: Source::default(),
+        configuration: opts.configuration.clone(),
     };
 
     let world = &resolve.worlds[id];
@@ -443,17 +449,47 @@ impl TsBindgen {
         for (_, func) in resolve.interfaces[id].functions.iter() {
             gen.ts_func(func, false, true);
         }
-        for (_, ty) in resolve.interfaces[id].types.iter() {
-            let ty = &resolve.types[*ty];
-            if let TypeDefKind::Resource = ty.kind {
-                let resource = ty.name.as_ref().unwrap();
-                if !gen.resources.contains_key(resource) {
-                    uwriteln!(gen.src, "export {{ {} }};", resource.to_upper_camel_case());
-                    gen.resources
-                        .insert(resource.to_string(), TsInterface::new(resolve, false));
+        for (_, type_id) in resolve.interfaces[id].types.iter() {
+            let ty = &resolve.types[*type_id];
+            match &ty.kind {
+                TypeDefKind::Resource => {
+                    let resource = ty.name.as_ref().unwrap();
+                    if !gen.resources.contains_key(resource) {
+                        uwriteln!(gen.src, "export {{ {} }};", resource.to_upper_camel_case());
+                        gen.resources.insert(
+                            resource.to_string(),
+                            TsInterface::new(resolve, false, &gen.configuration),
+                        );
+                        if gen
+                            .configuration
+                            .get(&resolve, type_id)
+                            .resource_as_iterator()
+                        {
+                            if let Some(payload) = Type::Id(*type_id)
+                                .payload_type_of_option_result_of_next_method_of_resource(resolve)
+                            {
+                                let iface = gen.resources.get_mut(resource).unwrap();
+                                iface.src.push_str(&"[Symbol.iterator](): Iterator<");
+                                iface.print_ty(&payload);
+                                iface.src.push_str(">;\n");
+                            }
+                        }
+                    }
                 }
+                TypeDefKind::Enum(_) => {
+                    if gen
+                        .configuration
+                        .get(&resolve, type_id)
+                        .enum_as_typescript_enum()
+                    {
+                        let name = ty.name.as_ref().unwrap();
+                        uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
+                    }
+                }
+                _ => {}
             }
         }
+
         uwriteln!(gen.src, "}}");
 
         gen.types(id);
@@ -467,20 +503,12 @@ impl TsBindgen {
     }
 
     fn ts_interface<'b>(&'b mut self, resolve: &'b Resolve, is_root: bool) -> TsInterface<'b> {
-        TsInterface {
-            is_root,
-            src: Source::default(),
-            resources: BTreeMap::new(),
-            local_names: LocalNames::default(),
-            resolve,
-            needs_ty_option: false,
-            needs_ty_result: false,
-        }
+        TsInterface::new(resolve, is_root, &self.configuration)
     }
 }
 
 impl<'a> TsInterface<'a> {
-    fn new(resolve: &'a Resolve, is_root: bool) -> Self {
+    fn new(resolve: &'a Resolve, is_root: bool, configuration: &'a Configuration) -> Self {
         TsInterface {
             is_root,
             src: Source::default(),
@@ -489,6 +517,7 @@ impl<'a> TsInterface<'a> {
             resolve,
             needs_ty_option: false,
             needs_ty_result: false,
+            configuration,
         }
     }
 
@@ -638,16 +667,32 @@ impl<'a> TsInterface<'a> {
     }
 
     fn ts_func(&mut self, func: &Function, default: bool, declaration: bool) {
-        let iface = if let FunctionKind::Method(ty)
-        | FunctionKind::Static(ty)
-        | FunctionKind::Constructor(ty) = func.kind
+        let iface = if let FunctionKind::Method(type_id)
+        | FunctionKind::Static(type_id)
+        | FunctionKind::Constructor(type_id) = func.kind
         {
-            let ty = &self.resolve.types[ty];
+            let ty = &self.resolve.types[type_id];
             let resource = ty.name.as_ref().unwrap();
             if !self.resources.contains_key(resource) {
                 uwriteln!(self.src, "export {{ {} }};", resource.to_upper_camel_case());
-                self.resources
-                    .insert(resource.to_string(), TsInterface::new(self.resolve, false));
+                self.resources.insert(
+                    resource.to_string(),
+                    TsInterface::new(self.resolve, false, &self.configuration),
+                );
+                if self
+                    .configuration
+                    .get(&self.resolve, &type_id)
+                    .resource_as_iterator()
+                {
+                    if let Some(payload) = Type::Id(type_id)
+                        .payload_type_of_option_result_of_next_method_of_resource(&self.resolve)
+                    {
+                        let iface = self.resources.get_mut(resource).unwrap();
+                        iface.src.push_str(&"[Symbol.iterator](): Iterator<");
+                        iface.print_ty(&payload);
+                        iface.src.push_str(">;\n");
+                    }
+                }
             }
             self.resources.get_mut(resource).unwrap()
         } else {
@@ -776,7 +821,7 @@ impl<'a> TsInterface<'a> {
         self.resolve
     }
 
-    fn type_record(&mut self, _id: TypeId, name: &str, record: &Record, docs: &Docs) {
+    fn type_record(&mut self, id: TypeId, name: &str, record: &Record, docs: &Docs) {
         self.docs(docs);
         self.src.push_str(&format!(
             "export interface {} {{\n",
@@ -791,6 +836,22 @@ impl<'a> TsInterface<'a> {
                 maybe_quote_id(&field.name.to_lower_camel_case()),
                 option_str
             ));
+            if self
+                .configuration
+                .get_member(&self.resolve, &id, &field.name)
+                .list_of_tuple_as_dictionary()
+            {
+                if let Some(type_) = field
+                    .ty
+                    .value_type_of_list_of_tuple_interpretable_as_dictionary(&self.resolve)
+                {
+                    self.src.push_str("{ [key: string]: ");
+                    self.print_ty(&type_);
+                    self.src.push_str(" }");
+                    self.src.push_str(",\n");
+                    continue;
+                }
+            }
             self.print_ty(ty);
             self.src.push_str(",\n");
         }
@@ -819,33 +880,93 @@ impl<'a> TsInterface<'a> {
         self.src.push_str("}\n");
     }
 
-    fn type_variant(&mut self, _id: TypeId, name: &str, variant: &Variant, docs: &Docs) {
-        self.docs(docs);
-        self.src
-            .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
-        for (i, case) in variant.cases.iter().enumerate() {
-            if i > 0 {
-                self.src.push_str(" | ");
+    fn type_variant(&mut self, id: TypeId, name: &str, variant: &Variant, docs: &Docs) {
+        if self
+            .configuration
+            .get(self.resolve, &id)
+            .variant_as_direct_union_of_resource_classes()
+        {
+            if let Some(case_type_defs) =
+                Type::Id(id).variant_case_type_defs_where_they_are_all_handles(self.resolve)
+            {
+                self.docs(docs);
+                self.src
+                    .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
+                for (i, case_type_def) in case_type_defs.iter().enumerate() {
+                    if i > 0 {
+                        self.src.push_str(" | ");
+                    }
+                    self.src
+                        .push_str(&case_type_def.name.as_ref().unwrap().to_upper_camel_case());
+                }
+                self.src.push_str(";\n");
+
+                let variant_enum_name = format!("{}_variant", name).to_upper_camel_case();
+                let variant_enum_fn_name = format!("{}_variant", name).to_lower_camel_case();
+                let variant_base_name = format!("{}_variant_base", name).to_upper_camel_case();
+
+                self.src
+                    .push_str(&format!("export enum {variant_enum_name} {{\n"));
+                for type_def in &case_type_defs {
+                    let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
+                    self.src
+                        .push_str(&format!("{class_name} = '{class_name}',\n"));
+                }
+                self.src.push_str("}\n");
+
+                self.src.push_str(&format!(
+                    "interface {variant_base_name} {{
+                      {variant_enum_fn_name}(): {variant_enum_name};\n",
+                ));
+                for type_def in &case_type_defs {
+                    let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
+                    self.src.push_str(&format!(
+                        "as{class_name}(): {class_name} | undefined;
+                        is{class_name}(): this is {class_name};
+                        assertIs{class_name}(): asserts this is {class_name};
+                        "
+                    ));
+                }
+                self.src.push_str("}\n");
+
+                self.src
+                    .push_str("// Typescript interface/class definition merging\n");
+                for case_type_def in &case_type_defs {
+                    let class_name = case_type_def.name.as_ref().unwrap().to_upper_camel_case();
+                    self.src.push_str(&format!(
+                        "interface {class_name} extends {variant_base_name} {{}}\n",
+                    ));
+                }
             }
+        } else {
+            self.docs(docs);
             self.src
-                .push_str(&format!("{}_{}", name, case.name).to_upper_camel_case());
-        }
-        self.src.push_str(";\n");
-        for case in variant.cases.iter() {
-            self.docs(&case.docs);
-            self.src.push_str(&format!(
-                "export interface {} {{\n",
-                format!("{}_{}", name, case.name).to_upper_camel_case()
-            ));
-            self.src.push_str("tag: '");
-            self.src.push_str(&case.name);
-            self.src.push_str("',\n");
-            if let Some(ty) = case.ty {
-                self.src.push_str("val: ");
-                self.print_ty(&ty);
-                self.src.push_str(",\n");
+                .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
+            for (i, case) in variant.cases.iter().enumerate() {
+                if i > 0 {
+                    self.src.push_str(" | ");
+                }
+                self.src
+                    .push_str(&format!("{}_{}", name, case.name).to_upper_camel_case());
             }
-            self.src.push_str("}\n");
+            self.src.push_str(";\n");
+
+            for case in variant.cases.iter() {
+                self.docs(&case.docs);
+                self.src.push_str(&format!(
+                    "export interface {} {{\n",
+                    format!("{}_{}", name, case.name).to_upper_camel_case()
+                ));
+                self.src.push_str("tag: '");
+                self.src.push_str(&case.name);
+                self.src.push_str("',\n");
+                if let Some(ty) = case.ty {
+                    self.src.push_str("val: ");
+                    self.print_ty(&ty);
+                    self.src.push_str(",\n");
+                }
+                self.src.push_str("}\n");
+            }
         }
     }
 
@@ -876,39 +997,58 @@ impl<'a> TsInterface<'a> {
         self.src.push_str(">;\n");
     }
 
-    fn type_enum(&mut self, _id: TypeId, name: &str, enum_: &Enum, docs: &Docs) {
-        // The complete documentation for this enum, including documentation for variants.
-        let mut complete_docs = String::new();
+    fn type_enum(&mut self, id: TypeId, name: &str, enum_: &Enum, docs: &Docs) {
+        if self
+            .configuration
+            .get(&self.resolve, &id)
+            .enum_as_typescript_enum()
+        {
+            self.src.push_str(&format!(
+                "export declare enum {} {{\n",
+                name.to_upper_camel_case()
+            ));
+            for case in enum_.cases.iter() {
+                if let Some(docs) = &case.docs.contents {
+                    self.src.push_str(docs);
+                }
+                let name = case.name.to_upper_camel_case();
+                self.src.push_str(&format!("{name} = '{name}',\n",));
+            }
+            self.src.push_str("}\n");
+        } else {
+            // The complete documentation for this enum, including documentation for variants.
+            let mut complete_docs = String::new();
 
-        if let Some(docs) = &docs.contents {
-            complete_docs.push_str(docs);
-            // Add a gap before the `# Variants` section.
-            complete_docs.push('\n');
-        }
-
-        writeln!(complete_docs, "# Variants").unwrap();
-
-        for case in enum_.cases.iter() {
-            writeln!(complete_docs).unwrap();
-            writeln!(complete_docs, "## `\"{}\"`", case.name).unwrap();
-
-            if let Some(docs) = &case.docs.contents {
-                writeln!(complete_docs).unwrap();
+            if let Some(docs) = &docs.contents {
                 complete_docs.push_str(docs);
+                // Add a gap before the `# Variants` section.
+                complete_docs.push('\n');
             }
-        }
 
-        self.docs_raw(&complete_docs);
+            writeln!(complete_docs, "# Variants").unwrap();
 
-        self.src
-            .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
-        for (i, case) in enum_.cases.iter().enumerate() {
-            if i != 0 {
-                self.src.push_str(" | ");
+            for case in enum_.cases.iter() {
+                writeln!(complete_docs).unwrap();
+                writeln!(complete_docs, "## `\"{}\"`", case.name).unwrap();
+
+                if let Some(docs) = &case.docs.contents {
+                    writeln!(complete_docs).unwrap();
+                    complete_docs.push_str(docs);
+                }
             }
-            self.src.push_str(&format!("'{}'", case.name));
+
+            self.docs_raw(&complete_docs);
+
+            self.src
+                .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
+            for (i, case) in enum_.cases.iter().enumerate() {
+                if i != 0 {
+                    self.src.push_str(" | ");
+                }
+                self.src.push_str(&format!("'{}'", case.name));
+            }
+            self.src.push_str(";\n");
         }
-        self.src.push_str(";\n");
     }
 
     fn type_alias(

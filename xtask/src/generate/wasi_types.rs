@@ -37,6 +37,7 @@ pub(crate) fn run() -> Result<()> {
             tracing: false,
             no_namespaced_exports: true,
             multi_memory: false,
+            configuration: Default::default(),
             import_bindings: Some(BindingsMode::Js),
         };
 

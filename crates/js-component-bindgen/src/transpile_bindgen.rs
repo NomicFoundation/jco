@@ -1,3 +1,4 @@
+use crate::configuration::{Configuration, TypeExtensions};
 use crate::core;
 use crate::esm_bindgen::EsmBindgen;
 use crate::files::Files;
@@ -69,6 +70,8 @@ pub struct TranspileOpts {
     /// Whether to output core Wasm utilizing multi-memory or to polyfill
     /// this handling.
     pub multi_memory: bool,
+    // General per-element configuration
+    pub configuration: Configuration,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -564,16 +567,42 @@ impl<'a> Instantiator<'a, '_> {
         self.exports(&self.component.exports);
     }
 
-    fn ensure_local_resource_class(&mut self, local_name: String) {
+    fn ensure_local_resource_class(&mut self, type_id: Option<TypeId>, local_name: String) {
         if !self.defined_resource_classes.contains(&local_name) {
             uwriteln!(
                 self.src.js,
                 "\nclass {local_name} {{
-                constructor () {{
-                    throw new Error('\"{local_name}\" resource does not define a constructor');
-                }}
-            }}"
+                    constructor () {{
+                        throw new Error('\"{local_name}\" resource does not define a constructor');
+                    }}
+                }}"
             );
+            if let Some(type_id) = type_id {
+                if self
+                    .gen
+                    .opts
+                    .configuration
+                    .get(&self.resolve, &type_id)
+                    .resource_as_iterator()
+                {
+                    if let Some(_) = Type::Id(type_id)
+                        .payload_type_of_option_result_of_next_method_of_resource(&self.resolve)
+                    {
+                        uwriteln!(
+                            self.src.js,
+                            "
+                            {local_name}.prototype[Symbol.iterator] = function () {{
+                              return {{
+                                next: () => {{
+                                  const value = this.next();
+                                  return {{ done: value == undefined, value }};
+                                }}
+                              }}
+                           }}"
+                        );
+                    }
+                }
+            }
             self.defined_resource_classes.insert(local_name.to_string());
         }
     }
@@ -588,7 +617,7 @@ impl<'a> Instantiator<'a, '_> {
                 continue;
             }
             if let Some(local_name) = self.gen.local_names.try_get(resource) {
-                self.ensure_local_resource_class(local_name.to_string());
+                self.ensure_local_resource_class(None, local_name.to_string());
             }
         }
 
@@ -1531,6 +1560,8 @@ impl<'a> Instantiator<'a, '_> {
             cur_resource_borrows: false,
             intrinsics: &mut self.gen.all_intrinsics,
             valid_lifting_optimization: self.gen.opts.valid_lifting_optimization,
+            configuration: self.gen.opts.configuration.clone(),
+            local_names: &mut self.gen.local_names,
             sizes: &self.sizes,
             err: if func.results.throws(self.resolve).is_some() {
                 match abi {
@@ -1818,6 +1849,113 @@ impl<'a> Instantiator<'a, '_> {
                             );
                         }
                     }
+
+                    let interface = &self.resolve.interfaces[id];
+                    for (_, type_id) in interface.types.iter() {
+                        let ty = &self.resolve.types[*type_id];
+                        match &ty.kind {
+                            TypeDefKind::Enum(enum_) => {
+                                if self
+                                    .gen
+                                    .opts
+                                    .configuration
+                                    .get(&self.resolve, type_id)
+                                    .enum_as_typescript_enum()
+                                {
+                                    let enum_name = ty.name.as_ref().unwrap().to_lower_camel_case();
+                                    uwriteln!(self.src.js, "var {enum_name} = {{}};");
+                                    for case in enum_.cases.iter() {
+                                        let case_name = (&case.name).to_upper_camel_case();
+                                        uwriteln!(
+                                            self.src.js,
+                                            "{enum_name}['{case_name}'] = '{case_name}';"
+                                        );
+                                    }
+                                    uwriteln!(self.src.js, "");
+                                    let external_enum_name = enum_name.to_upper_camel_case();
+                                    self.gen.esm_bindgen.add_export_binding(
+                                        Some(export_name),
+                                        enum_name.clone(),
+                                        external_enum_name,
+                                    );
+
+                                    let cabi_enum_name = format!("{enum_name}CABI");
+                                    uwriteln!(self.src.js, "var {cabi_enum_name} = {{}};");
+                                    for (index, case) in enum_.cases.iter().enumerate() {
+                                        let case_name = (&case.name).to_upper_camel_case();
+                                        uwriteln!(
+                                            self.src.js,
+                                            "{cabi_enum_name}[{cabi_enum_name}['{case_name}'] = {index}] = '{case_name}';"
+                                        );
+                                    }
+                                    uwriteln!(self.src.js, "");
+                                }
+                            }
+                            TypeDefKind::Variant(_) => {
+                                if self
+                                    .gen
+                                    .opts
+                                    .configuration
+                                    .get(self.resolve, type_id)
+                                    .variant_as_direct_union_of_resource_classes()
+                                {
+                                    if let Some(case_type_defs) = Type::Id(*type_id)
+                                        .variant_case_type_defs_where_they_are_all_handles(
+                                            self.resolve,
+                                        )
+                                    {
+                                        let variant_enum_name =
+                                            format!("{}_variant", ty.name.as_ref().unwrap())
+                                                .to_upper_camel_case();
+                                        uwriteln!(self.src.js, "var {variant_enum_name} = {{}};\n");
+
+                                        for type_def in &case_type_defs {
+                                            let class_name = type_def
+                                                .name
+                                                .as_ref()
+                                                .unwrap()
+                                                .to_upper_camel_case();
+                                            uwriteln!(
+                                                self.src.js,
+                                                "{variant_enum_name}['{class_name}'] = '{class_name}';"
+                                            );
+                                            uwriteln!(
+                                                self.src.js,
+                                                "{class_name}.prototype.nodeVariant = function () {{ return {variant_enum_name}.{class_name}; }};
+                                                {class_name}.prototype.as{class_name} = function() {{ return this; }};
+                                                {class_name}.prototype.is{class_name} = function() {{ return true; }};
+                                                {class_name}.prototype.assertIs{class_name} = function() {{}};"
+                                            );
+                                            let outer_class_name = class_name;
+                                            for type_def in &case_type_defs {
+                                                let class_name = type_def
+                                                    .name
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .to_upper_camel_case();
+                                                if class_name == outer_class_name {
+                                                    continue;
+                                                }
+                                                uwriteln!(
+                                                    self.src.js,
+                                                    "{outer_class_name}.prototype.as{class_name} = function() {{ return undefined; }};
+                                                    {outer_class_name}.prototype.is{class_name} = function() {{ return false; }};
+                                                    {outer_class_name}.prototype.assertIs{class_name} = function() {{ throw new TypeError('Not a {class_name}'); }};"
+                                                );
+                                            }
+                                            uwriteln!(self.src.js, "");
+                                        }
+                                        self.gen.esm_bindgen.add_export_binding(
+                                            Some(export_name),
+                                            variant_enum_name.clone(),
+                                            variant_enum_name,
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
 
                 // ignore type exports for now
@@ -1842,8 +1980,8 @@ impl<'a> Instantiator<'a, '_> {
     ) {
         match func.kind {
             FunctionKind::Freestanding => uwrite!(self.src.js, "\nfunction {local_name}"),
-            FunctionKind::Method(_) => {
-                self.ensure_local_resource_class(local_name.to_string());
+            FunctionKind::Method(type_id) => {
+                self.ensure_local_resource_class(Some(type_id), local_name.to_string());
                 let method_name = func.item_name().to_lower_camel_case();
                 uwrite!(
                     self.src.js,
@@ -1855,8 +1993,8 @@ impl<'a> Instantiator<'a, '_> {
                     }
                 );
             }
-            FunctionKind::Static(_) => {
-                self.ensure_local_resource_class(local_name.to_string());
+            FunctionKind::Static(type_id) => {
+                self.ensure_local_resource_class(Some(type_id), local_name.to_string());
                 let method_name = func.item_name().to_lower_camel_case();
                 uwrite!(
                     self.src.js,

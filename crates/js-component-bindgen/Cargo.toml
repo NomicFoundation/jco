@@ -23,6 +23,7 @@ transpile-bindgen = []
 [dependencies]
 anyhow = { workspace = true }
 heck = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 wasmtime-environ = { workspace = true, features = ['component-model'] }
 wit-bindgen-core = { workspace = true }
 wit-component = { workspace = true }
