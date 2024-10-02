@@ -93,6 +93,8 @@ pub enum ElementConfig {
         as_iterator: bool,
         #[serde(default)]
         use_guest_class: bool,
+        #[serde(default)]
+        custom_inspect: bool,
     },
     Enum {
         #[serde(default)]
@@ -105,6 +107,10 @@ pub enum ElementConfig {
     ListOfTuple {
         #[serde(default)]
         as_dictionary: bool,
+    },
+    Function {
+        #[serde(default)]
+        as_getter: bool,
     },
 }
 
@@ -130,6 +136,13 @@ impl ElementConfig {
         }
     }
 
+    pub fn resource_custom_inspect(&self) -> bool {
+        match self {
+            ElementConfig::Resource { custom_inspect, .. } => *custom_inspect,
+            _ => false,
+        }
+    }
+
     pub fn resource_use_guest_class(&self) -> bool {
         match self {
             ElementConfig::Resource {
@@ -151,6 +164,13 @@ impl ElementConfig {
     pub fn list_of_tuple_as_dictionary(&self) -> bool {
         match self {
             ElementConfig::ListOfTuple { as_dictionary } => *as_dictionary,
+            _ => false,
+        }
+    }
+
+    pub fn function_as_getter(&self) -> bool {
+        match self {
+            ElementConfig::Function { as_getter } => *as_getter,
             _ => false,
         }
     }

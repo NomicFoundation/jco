@@ -43,6 +43,7 @@ struct TsInterface<'a> {
     needs_ty_result: bool,
     local_names: LocalNames,
     resources: BTreeMap<String, TsInterface<'a>>,
+    variant_member_bodies: BTreeMap<String, String>,
     configuration: &'a Configuration,
 }
 
@@ -486,6 +487,18 @@ impl TsBindgen {
                         uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
                     }
                 }
+                TypeDefKind::Variant(_) => {
+                    if gen
+                        .configuration
+                        .get(&resolve, type_id)
+                        .variant_as_direct_union_of_resource_classes()
+                    {
+                        let name = ty.name.as_ref().unwrap();
+                        uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
+                        let variant_enum_name = format!("{}_variant", name).to_upper_camel_case();
+                        uwriteln!(gen.src, "export {{ {variant_enum_name} }};");
+                    }
+                }
                 _ => {}
             }
         }
@@ -514,6 +527,7 @@ impl<'a> TsInterface<'a> {
             src: Source::default(),
             resources: BTreeMap::new(),
             local_names: LocalNames::default(),
+            variant_member_bodies: BTreeMap::new(),
             resolve,
             needs_ty_option: false,
             needs_ty_result: false,
@@ -523,11 +537,12 @@ impl<'a> TsInterface<'a> {
 
     fn finish(mut self) -> Source {
         for (resource, source) in self.resources {
-            uwriteln!(
-                self.src,
-                "\nexport class {} {{",
-                resource.to_upper_camel_case()
-            );
+            let class_name = resource.to_upper_camel_case();
+            uwriteln!(self.src, "\nexport class {class_name} {{",);
+            if let Some(body) = self.variant_member_bodies.get(&class_name) {
+                self.src.push_str(&body);
+                self.src.push_str("\n");
+            }
             self.src.push_str(&source.src);
             uwriteln!(self.src, "}}")
         }
@@ -603,8 +618,9 @@ impl<'a> TsInterface<'a> {
                             self.print_ty(t);
                             self.src.push_str(">");
                         } else {
+                            self.src.push_str("(");
                             self.print_ty(t);
-                            self.src.push_str(" | undefined");
+                            self.src.push_str(" | undefined)");
                         }
                     }
                     TypeDefKind::Result(r) => {
@@ -667,6 +683,11 @@ impl<'a> TsInterface<'a> {
     }
 
     fn ts_func(&mut self, func: &Function, default: bool, declaration: bool) {
+        let function_as_getter = self
+            .configuration
+            .get(&self.resolve, func)
+            .function_as_getter();
+
         let iface = if let FunctionKind::Method(type_id)
         | FunctionKind::Static(type_id)
         | FunctionKind::Constructor(type_id) = func.kind
@@ -723,10 +744,11 @@ impl<'a> TsInterface<'a> {
                     };
                 }
                 FunctionKind::Method(_) => {
+                    let getter = if function_as_getter { "get " } else { "" };
                     if is_js_identifier(&out_name) {
-                        iface.src.push_str(&out_name);
+                        iface.src.push_str(&format!("{getter}{out_name}"));
                     } else {
-                        iface.src.push_str(&format!("'{out_name}'"));
+                        iface.src.push_str(&format!("{getter}'{out_name}'"));
                     }
                 }
                 FunctionKind::Static(_) => {
@@ -902,8 +924,6 @@ impl<'a> TsInterface<'a> {
                 self.src.push_str(";\n");
 
                 let variant_enum_name = format!("{}_variant", name).to_upper_camel_case();
-                let variant_enum_fn_name = format!("{}_variant", name).to_lower_camel_case();
-                let variant_base_name = format!("{}_variant_base", name).to_upper_camel_case();
 
                 self.src
                     .push_str(&format!("export enum {variant_enum_name} {{\n"));
@@ -914,28 +934,50 @@ impl<'a> TsInterface<'a> {
                 }
                 self.src.push_str("}\n");
 
-                self.src.push_str(&format!(
-                    "interface {variant_base_name} {{
-                      {variant_enum_fn_name}(): {variant_enum_name};\n",
-                ));
-                for type_def in &case_type_defs {
-                    let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
-                    self.src.push_str(&format!(
-                        "as{class_name}(): {class_name} | undefined;
-                        is{class_name}(): this is {class_name};
-                        assertIs{class_name}(): asserts this is {class_name};
-                        "
-                    ));
-                }
-                self.src.push_str("}\n");
-
-                self.src
-                    .push_str("// Typescript interface/class definition merging\n");
                 for case_type_def in &case_type_defs {
                     let class_name = case_type_def.name.as_ref().unwrap().to_upper_camel_case();
-                    self.src.push_str(&format!(
-                        "interface {class_name} extends {variant_base_name} {{}}\n",
-                    ));
+                    let variant_enum_fn_name = format!("{}_variant", name).to_lower_camel_case();
+
+                    let outer_class_name = class_name;
+                    for type_def in &case_type_defs {
+                        let mut body = String::new();
+                        let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
+                        if class_name == outer_class_name {
+                            write!(
+                                &mut body,
+                                "
+                                    readonly {variant_enum_fn_name} = {variant_enum_name}.{class_name};
+
+                                    as{class_name}(): {class_name};
+                                    is{class_name}(): this is {class_name};
+                                    assertIs{class_name}(): asserts this is {class_name};
+                                "
+                            )
+                            .unwrap();
+                        } else {
+                            write!(
+                                &mut body,
+                                "
+                                    as{class_name}(): undefined;
+                                    is{class_name}(): this is {class_name};
+                                    assertIs{class_name}(): asserts this is {class_name};
+                                "
+                            )
+                            .unwrap();
+                        }
+                        let existing_body = self.variant_member_bodies.get(&outer_class_name);
+                        let new_body = existing_body
+                            .map(|b| {
+                                if class_name == outer_class_name {
+                                    format!("{body}{b}")
+                                } else {
+                                    format!("{b}{body}")
+                                }
+                            })
+                            .unwrap_or(body);
+                        self.variant_member_bodies
+                            .insert(outer_class_name.clone(), new_body);
+                    }
                 }
             }
         } else {

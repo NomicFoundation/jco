@@ -591,16 +591,37 @@ impl<'a> Instantiator<'a, '_> {
                         uwriteln!(
                             self.src.js,
                             "
-                            {local_name}.prototype[Symbol.iterator] = function () {{
-                              return {{
-                                next: () => {{
-                                  const value = this.next();
-                                  return {{ done: value == undefined, value }};
+                                {local_name}.prototype[Symbol.iterator] = function () {{
+                                    return {{
+                                        next: () => {{
+                                            const value = this.next();
+                                            return {{ done: value == undefined, value }};
+                                        }}
+                                    }}
                                 }}
-                              }}
-                           }}"
+                            "
                         );
                     }
+                }
+                if self
+                    .gen
+                    .opts
+                    .configuration
+                    .get(&self.resolve, &type_id)
+                    .resource_custom_inspect()
+                {
+                    uwriteln!(
+                            self.src.js,
+                            "
+                                {local_name}.prototype[Symbol.for('nodejs.util.inspect.custom')] = function(depth, options, inspect) {{
+                                    return inspect(this, {{
+                                        depth,
+                                        getters: true,
+                                        ...options,
+                                    }});
+                                }}
+                            "
+                        );
                 }
             }
             self.defined_resource_classes.insert(local_name.to_string());
@@ -1921,10 +1942,11 @@ impl<'a> Instantiator<'a, '_> {
                                             );
                                             uwriteln!(
                                                 self.src.js,
-                                                "{class_name}.prototype.nodeVariant = function () {{ return {variant_enum_name}.{class_name}; }};
-                                                {class_name}.prototype.as{class_name} = function() {{ return this; }};
-                                                {class_name}.prototype.is{class_name} = function() {{ return true; }};
-                                                {class_name}.prototype.assertIs{class_name} = function() {{}};"
+                                                "
+                                                    {class_name}.prototype.as{class_name} = function() {{ return this; }};
+                                                    {class_name}.prototype.is{class_name} = function() {{ return true; }};
+                                                    {class_name}.prototype.assertIs{class_name} = function() {{}};
+                                                "
                                             );
                                             let outer_class_name = class_name;
                                             for type_def in &case_type_defs {
@@ -1938,9 +1960,11 @@ impl<'a> Instantiator<'a, '_> {
                                                 }
                                                 uwriteln!(
                                                     self.src.js,
-                                                    "{outer_class_name}.prototype.as{class_name} = function() {{ return undefined; }};
-                                                    {outer_class_name}.prototype.is{class_name} = function() {{ return false; }};
-                                                    {outer_class_name}.prototype.assertIs{class_name} = function() {{ throw new TypeError('Not a {class_name}'); }};"
+                                                    "
+                                                        {outer_class_name}.prototype.as{class_name} = function() {{ return undefined; }};
+                                                        {outer_class_name}.prototype.is{class_name} = function() {{ return false; }};
+                                                        {outer_class_name}.prototype.assertIs{class_name} = function() {{ throw new TypeError('Not a {class_name}'); }};
+                                                    "
                                                 );
                                             }
                                             uwriteln!(self.src.js, "");
