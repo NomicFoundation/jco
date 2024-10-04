@@ -186,9 +186,9 @@ pub fn ts_bindgen(
             } else {
                 uwriteln!(
                     bindgen.export_object,
-                    "export const {}: typeof {};",
+                    r#"export * as {} from "./interfaces/{}.js";"#,
                     alias,
-                    local_name.to_upper_camel_case()
+                    local_name.to_kebab_case()
                 );
             }
         }
