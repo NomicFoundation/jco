@@ -2005,15 +2005,25 @@ impl<'a> Instantiator<'a, '_> {
             FunctionKind::Method(type_id) => {
                 self.ensure_local_resource_class(Some(type_id), local_name.to_string());
                 let method_name = func.item_name().to_lower_camel_case();
-                uwrite!(
-                    self.src.js,
-                    "\n{local_name}.prototype.{method_name} = function {}",
-                    if !is_js_reserved_word(&method_name) {
-                        method_name.to_string()
-                    } else {
-                        format!("${method_name}")
-                    }
-                );
+
+                let is_getter = self
+                    .gen
+                    .opts
+                    .configuration
+                    .get(&self.resolve, func)
+                    .function_as_getter();
+
+                if is_getter {
+                    uwrite!(
+                        self.src.js,
+                        "\nObject.defineProperty({local_name}.prototype, \"{method_name}\", {{ get: function",
+                    );
+                } else {
+                    uwrite!(
+                        self.src.js,
+                        "\n{local_name}.prototype.{method_name} = function",
+                    );
+                }
             }
             FunctionKind::Static(type_id) => {
                 self.ensure_local_resource_class(Some(type_id), local_name.to_string());
@@ -2061,7 +2071,21 @@ impl<'a> Instantiator<'a, '_> {
         );
         match func.kind {
             FunctionKind::Freestanding => self.src.js("\n"),
-            FunctionKind::Method(_) | FunctionKind::Static(_) => self.src.js(";\n"),
+            FunctionKind::Method(_) => {
+                let is_getter = self
+                    .gen
+                    .opts
+                    .configuration
+                    .get(&self.resolve, func)
+                    .function_as_getter();
+
+                if is_getter {
+                    self.src.js("});\n");
+                } else {
+                    self.src.js(";\n");
+                }
+            }
+            FunctionKind::Static(_) => self.src.js(";\n"),
             FunctionKind::Constructor(_) => self.src.js("\n}\n"),
         }
     }
