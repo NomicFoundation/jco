@@ -948,7 +948,7 @@ impl<'a> TsInterface<'a> {
                                 "
                                     readonly {variant_enum_fn_name} = {variant_enum_name}.{class_name};
 
-                                    as{class_name}(): {class_name};
+                                    as{class_name}(): this;
                                     is{class_name}(): this is {class_name};
                                 "
                             )
@@ -958,7 +958,7 @@ impl<'a> TsInterface<'a> {
                                 &mut body,
                                 "
                                     as{class_name}(): undefined;
-                                    is{class_name}(): this is {class_name};
+                                    is{class_name}(): false;
                                 "
                             )
                             .unwrap();
