@@ -1945,7 +1945,6 @@ impl<'a> Instantiator<'a, '_> {
                                                 "
                                                     {class_name}.prototype.as{class_name} = function() {{ return this; }};
                                                     {class_name}.prototype.is{class_name} = function() {{ return true; }};
-                                                    {class_name}.prototype.assertIs{class_name} = function() {{}};
                                                 "
                                             );
                                             let outer_class_name = class_name;
@@ -1963,7 +1962,6 @@ impl<'a> Instantiator<'a, '_> {
                                                     "
                                                         {outer_class_name}.prototype.as{class_name} = function() {{ return undefined; }};
                                                         {outer_class_name}.prototype.is{class_name} = function() {{ return false; }};
-                                                        {outer_class_name}.prototype.assertIs{class_name} = function() {{ throw new TypeError('Not a {class_name}'); }};
                                                     "
                                                 );
                                             }

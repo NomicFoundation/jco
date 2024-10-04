@@ -950,7 +950,6 @@ impl<'a> TsInterface<'a> {
 
                                     as{class_name}(): {class_name};
                                     is{class_name}(): this is {class_name};
-                                    assertIs{class_name}(): asserts this is {class_name};
                                 "
                             )
                             .unwrap();
@@ -960,7 +959,6 @@ impl<'a> TsInterface<'a> {
                                 "
                                     as{class_name}(): undefined;
                                     is{class_name}(): this is {class_name};
-                                    assertIs{class_name}(): asserts this is {class_name};
                                 "
                             )
                             .unwrap();
