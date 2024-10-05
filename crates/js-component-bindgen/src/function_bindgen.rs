@@ -1249,12 +1249,11 @@ impl Bindgen for FunctionBindgen<'_> {
                 }
 
                 if self.err == ErrHandling::ThrowResultErr {
-                    let component_err = self.intrinsic(Intrinsic::ComponentError);
                     let op = &operands[0];
                     uwriteln!(
                         self.src,
                         "if ({op}.tag === 'err') {{
-                            throw new {component_err}({op}.val);
+                            throw {op}.val;
                         }}
                         return {op}.val;"
                     );
