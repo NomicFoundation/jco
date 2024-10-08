@@ -610,18 +610,30 @@ impl<'a> Instantiator<'a, '_> {
                     .get(&self.resolve, &type_id)
                     .resource_custom_inspect()
                 {
+                    let symbol = self.gen.intrinsic(Intrinsic::NodeJSCustomInspectSymbol);
+
                     uwriteln!(
-                            self.src.js,
-                            "
-                                {local_name}.prototype[Symbol.for('nodejs.util.inspect.custom')] = function(depth, options, inspect) {{
+                        self.src.js,
+                        "
+                            {local_name}.prototype[{symbol}] = function(depth, options, inspect) {{
+                                const original = Object.getPrototypeOf(this)[{symbol}];
+
+                                try {{
+                                    // Temporarily remove the custom inspect form the object's prototype to avoid infinite recursion:
+                                    delete Object.getPrototypeOf(this)[{symbol}];
+
                                     return inspect(this, {{
+                                        ...options,
                                         depth,
                                         getters: true,
-                                        ...options,
+                                        showHidden: true,
                                     }});
+                                }} finally {{
+                                    Object.getPrototypeOf(this)[{symbol}] = original;
                                 }}
-                            "
-                        );
+                            }}
+                        "
+                    );
                 }
             }
             self.defined_resource_classes.insert(local_name.to_string());

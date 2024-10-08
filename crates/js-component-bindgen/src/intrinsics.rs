@@ -68,6 +68,7 @@ pub enum Intrinsic {
     Utf8EncodedLen,
     ValidateGuestChar,
     ValidateHostChar,
+    NodeJSCustomInspectSymbol,
 }
 
 /// Emits the intrinsic `i` to this file and then returns the name of the
@@ -586,6 +587,10 @@ pub fn render_intrinsics(
                     return s.codePointAt(0);
                 }
             "),
+
+            Intrinsic::NodeJSCustomInspectSymbol => output.push_str(r#"
+                const nodeJSCustomInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
+            "#),
       }
     }
 
@@ -728,6 +733,7 @@ impl Intrinsic {
             Intrinsic::Utf8EncodedLen => "utf8EncodedLen",
             Intrinsic::ValidateGuestChar => "validateGuestChar",
             Intrinsic::ValidateHostChar => "validateHostChar",
+            Intrinsic::NodeJSCustomInspectSymbol => "nodeJSCustomInspectSymbol",
         }
     }
 }
