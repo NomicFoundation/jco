@@ -84,6 +84,9 @@ world js-component-bindgen {
     tla-compat: option<bool>,
     instantiation: option<instantiation-mode>,
     map: option<maps>,
+
+    /// The path to a json5 configuration file to use for the code generation
+    configuration-file: option<string>,
   }
 
   enum export-type {

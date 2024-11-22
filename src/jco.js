@@ -63,6 +63,7 @@ program.command('types')
   .option('-n, --world-name <world>', 'WIT world to generate types for')
   .requiredOption('-o, --out-dir <out-dir>', 'output directory')
   .option('--tla-compat', 'generates types for the TLA compat output with an async $init promise export')
+  .option('--configuration-file <filename>', 'the path to a json5 configuration file to use for the code generation')
   .addOption(new Option('-I, --instantiation [mode]', 'type output for custom module instantiation').choices(['async', 'sync']).preset('async'))
   .option('-q, --quiet', 'disable output summary')
   .action(asyncAction(types));

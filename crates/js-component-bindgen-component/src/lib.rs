@@ -130,6 +130,19 @@ impl Guest for JsComponentBindgenComponent {
         opts: TypeGenerationOptions,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         let mut resolve = Resolve::default();
+        let configuration = match &opts.configuration_file {
+            Some(path) => {
+                let contents = std::fs::read_to_string(path)
+                    .with_context(|| format!("failed to read configuration file {path}"))
+                    .map_err(|e| e.to_string())?;
+                let configuration: js_component_bindgen::configuration::Configuration =
+                    serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+                println!("{:?}", configuration);
+                configuration
+            }
+            None => Default::default(),
+        };
+
         let id = match opts.wit {
             Wit::Source(source) => {
                 let pkg = UnresolvedPackage::parse(&PathBuf::from(format!("{name}.wit")), &source)
@@ -172,7 +185,7 @@ impl Guest for JsComponentBindgenComponent {
             tracing: false,
             no_namespaced_exports: false,
             multi_memory: false,
-            configuration: Default::default(),
+            configuration,
             import_bindings: None,
         };
 
