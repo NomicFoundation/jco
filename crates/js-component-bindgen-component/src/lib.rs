@@ -175,9 +175,9 @@ impl Guest for JsComponentBindgenComponent {
 }
 
 fn get_configuration(
-    config_file: &Option<String>,
+    config_file_path: &Option<String>,
 ) -> Result<js_component_bindgen::configuration::Configuration, String> {
-    match config_file {
+    match config_file_path {
         Some(path) => {
             let contents = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read configuration file {path}"))
