@@ -27,6 +27,7 @@ export async function types(witPath, opts) {
  *   instantiation?: 'async' | 'sync',
  *   tlaCompat?: bool,
  *   outDir?: string,
+ *   configurationFile?: string,
  * }} opts
  * @returns {Promise<{ [filename: string]: Uint8Array }>}
  */
@@ -46,7 +47,8 @@ export async function typesComponent(witPath, opts) {
     wit: { tag: 'path', val: (isWindows ? '//?/' : '') + resolve(witPath) },
     instantiation,
     tlaCompat: opts.tlaCompat ?? false,
-    world: opts.worldName
+    world: opts.worldName,
+    configurationFile: opts.configurationFile,
   }).map(([name, file]) => [`${outDir}${name}`, file]));
 }
 

@@ -1043,13 +1043,16 @@ impl<'a> TsInterface<'a> {
             .get(&self.resolve, &id)
             .enum_as_typescript_enum()
         {
+            if let Some(docs) = &docs.contents {
+                self.docs_raw(docs);
+            }
             self.src.push_str(&format!(
                 "export declare enum {} {{\n",
                 name.to_upper_camel_case()
             ));
             for case in enum_.cases.iter() {
                 if let Some(docs) = &case.docs.contents {
-                    self.src.push_str(docs);
+                    self.docs_raw(docs);
                 }
                 let name = case.name.to_upper_camel_case();
                 self.src.push_str(&format!("{name} = '{name}',\n",));
