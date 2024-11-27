@@ -552,7 +552,8 @@ impl<'a> TsInterface<'a> {
     fn docs_raw(&mut self, docs: &str) {
         self.src.push_str("/**\n");
         for line in docs.lines() {
-            self.src.push_str(&format!(" * {}\n", line));
+            self.src
+                .push_str(&format!(" * {}\n", line.replace("*/", "*\\/")));
         }
         self.src.push_str(" */\n");
     }
