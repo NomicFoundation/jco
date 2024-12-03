@@ -975,7 +975,7 @@ impl<'a> TsInterface<'a> {
                                 &mut body,
                                 "
                                     /**
-                                     * Coerce this variant to a {class_name}, or undefined if this is not the correct kind.
+                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct kind.
                                      */
                                     as{class_name}(): undefined;
 
