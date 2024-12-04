@@ -500,8 +500,8 @@ impl TsBindgen {
                     {
                         let name = ty.name.as_ref().unwrap();
                         uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
-                        let variant_enum_name = format!("{}_kind", name).to_upper_camel_case();
-                        uwriteln!(gen.src, "export {{ {variant_enum_name} }};");
+                        let type_enum_name = format!("{}_type", name).to_upper_camel_case();
+                        uwriteln!(gen.src, "export {{ {type_enum_name} }};");
                     }
                 }
                 _ => {}
@@ -931,10 +931,10 @@ impl<'a> TsInterface<'a> {
                 }
                 self.src.push_str(";\n");
 
-                let variant_enum_name = format!("{}_kind", name).to_upper_camel_case();
+                let type_enum_name = format!("{}_type", name).to_upper_camel_case();
 
                 self.src
-                    .push_str(&format!("export enum {variant_enum_name} {{\n"));
+                    .push_str(&format!("export enum {type_enum_name} {{\n"));
                 for type_def in &case_type_defs {
                     let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
                     self.src
@@ -954,17 +954,17 @@ impl<'a> TsInterface<'a> {
                                 &mut body,
                                 "
                                     /**
-                                     * The variant of {variant_enum_name} that corresponds to this class.
+                                     * The variant of `{type_enum_name}` that corresponds to this class.
                                      */
-                                    readonly type = {variant_enum_name}.{class_name};
+                                    readonly type = {type_enum_name}.{class_name};
 
                                     /**
-                                     * Coerce this variant to a {class_name}, or undefined if this is not the correct kind.
+                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct type.
                                      */
                                     as{class_name}(): this;
 
                                     /**
-                                     * Return `true` if this object is an instance of {class_name}.
+                                     * Return `true` if this object is an instance of `{class_name}`.
                                      */
                                     is{class_name}(): this is {class_name};
                                 "
@@ -975,12 +975,12 @@ impl<'a> TsInterface<'a> {
                                 &mut body,
                                 "
                                     /**
-                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct kind.
+                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct type.
                                      */
                                     as{class_name}(): undefined;
 
                                     /**
-                                     * Return `true` if this object is an instance of {class_name}.
+                                     * Return `true` if this object is an instance of `{class_name}`.
                                      */
                                     is{class_name}(): false;
                                 "
