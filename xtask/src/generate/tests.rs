@@ -73,7 +73,7 @@ pub fn run() -> anyhow::Result<()> {
 
     // Compile wasmtime test programs
     let guard = sh.push_dir("submodules/wasmtime/crates/test-programs");
-    cmd!(sh, "cargo build --target wasm32-wasi").run()?;
+    cmd!(sh, "cargo build --target wasm32-wasip1").run()?;
     drop(guard);
 
     // Tidy up the dir and recreate it.
@@ -85,7 +85,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let mut test_names = vec![];
 
-    for entry in fs::read_dir("submodules/wasmtime/target/wasm32-wasi/debug")? {
+    for entry in fs::read_dir("submodules/wasmtime/target/wasm32-wasip1/debug")? {
         let entry = entry?;
         // skip all files which don't end with `.wasm`
         if entry.path().extension().and_then(|p| p.to_str()) != Some("wasm") {
@@ -111,7 +111,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let mut all_names = Vec::new();
     for test_name in test_names {
-        let path = format!("submodules/wasmtime/target/wasm32-wasi/debug/{test_name}.wasm");
+        let path = format!("submodules/wasmtime/target/wasm32-wasip1/debug/{test_name}.wasm");
         // compile into generated dir
         let dest_file = format!("./tests/gen/{test_name}.component.wasm");
 
