@@ -1939,13 +1939,8 @@ impl<'a> Instantiator<'a, '_> {
                                     {
                                         let variant_type_name = ty.name.as_ref().unwrap();
 
-                                        let variant_enum_name =
-                                            format!("{variant_type_name}_variant")
-                                                .to_upper_camel_case();
-
-                                        let variant_getter_name =
-                                            format!("{variant_type_name}_variant")
-                                                .to_lower_camel_case();
+                                        let variant_enum_name = format!("{variant_type_name}_type")
+                                            .to_upper_camel_case();
 
                                         uwriteln!(self.src.js, "var {variant_enum_name} = {{}};\n");
 
@@ -1962,7 +1957,7 @@ impl<'a> Instantiator<'a, '_> {
                                             uwriteln!(
                                                 self.src.js,
                                                 "
-                                                    Object.defineProperty({class_name}.prototype, \"{variant_getter_name}\", {{
+                                                    Object.defineProperty({class_name}.prototype, \"type\", {{
                                                         get: function() {{ return {variant_enum_name}['{class_name}']; }}
                                                     }});
 
