@@ -43,6 +43,7 @@ struct TsInterface<'a> {
     needs_ty_result: bool,
     local_names: LocalNames,
     resources: BTreeMap<String, TsInterface<'a>>,
+    resource_docs: BTreeMap<String, String>,
     variant_member_bodies: BTreeMap<String, String>,
     configuration: &'a Configuration,
 }
@@ -461,6 +462,10 @@ impl TsBindgen {
                             resource.to_string(),
                             TsInterface::new(resolve, false, &gen.configuration),
                         );
+
+                        if let Some(docs) = &ty.docs.contents {
+                            gen.resource_docs.insert(resource.to_string(), docs.clone());
+                        }
                         if gen
                             .configuration
                             .get(&resolve, type_id)
@@ -495,8 +500,8 @@ impl TsBindgen {
                     {
                         let name = ty.name.as_ref().unwrap();
                         uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
-                        let variant_enum_name = format!("{}_variant", name).to_upper_camel_case();
-                        uwriteln!(gen.src, "export {{ {variant_enum_name} }};");
+                        let type_enum_name = format!("{}_type", name).to_upper_camel_case();
+                        uwriteln!(gen.src, "export {{ {type_enum_name} }};");
                     }
                 }
                 _ => {}
@@ -526,6 +531,7 @@ impl<'a> TsInterface<'a> {
             is_root,
             src: Source::default(),
             resources: BTreeMap::new(),
+            resource_docs: BTreeMap::new(),
             local_names: LocalNames::default(),
             variant_member_bodies: BTreeMap::new(),
             resolve,
@@ -536,11 +542,16 @@ impl<'a> TsInterface<'a> {
     }
 
     fn finish(mut self) -> Source {
-        for (resource, source) in self.resources {
+        for (resource, source) in self.resources.iter() {
             let class_name = resource.to_upper_camel_case();
-            uwriteln!(self.src, "\nexport class {class_name} {{",);
+            if let Some(resource_docs) = self.resource_docs.get(resource) {
+                uwrite!(self.src, "\n");
+                render_docs(&mut self.src, resource_docs);
+            }
+
+            uwriteln!(self.src, "export class {class_name} {{",);
             if let Some(body) = self.variant_member_bodies.get(&class_name) {
-                self.src.push_str(&body);
+                self.src.push_str(body);
                 self.src.push_str("\n");
             }
             self.src.push_str(&source.src);
@@ -549,18 +560,9 @@ impl<'a> TsInterface<'a> {
         self.src
     }
 
-    fn docs_raw(&mut self, docs: &str) {
-        self.src.push_str("/**\n");
-        for line in docs.lines() {
-            self.src
-                .push_str(&format!(" * {}\n", line.replace("*/", "*\\/")));
-        }
-        self.src.push_str(" */\n");
-    }
-
     fn docs(&mut self, docs: &Docs) {
         if let Some(docs) = &docs.contents {
-            self.docs_raw(docs);
+            render_docs(&mut self.src, docs);
         }
     }
 
@@ -701,6 +703,11 @@ impl<'a> TsInterface<'a> {
                     resource.to_string(),
                     TsInterface::new(self.resolve, false, &self.configuration),
                 );
+
+                if let Some(docs) = &ty.docs.contents {
+                    self.resource_docs
+                        .insert(resource.to_string(), docs.clone());
+                }
                 if self
                     .configuration
                     .get(&self.resolve, &type_id)
@@ -924,10 +931,10 @@ impl<'a> TsInterface<'a> {
                 }
                 self.src.push_str(";\n");
 
-                let variant_enum_name = format!("{}_variant", name).to_upper_camel_case();
+                let type_enum_name = format!("{}_type", name).to_upper_camel_case();
 
                 self.src
-                    .push_str(&format!("export enum {variant_enum_name} {{\n"));
+                    .push_str(&format!("export enum {type_enum_name} {{\n"));
                 for type_def in &case_type_defs {
                     let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
                     self.src
@@ -937,7 +944,6 @@ impl<'a> TsInterface<'a> {
 
                 for case_type_def in &case_type_defs {
                     let class_name = case_type_def.name.as_ref().unwrap().to_upper_camel_case();
-                    let variant_enum_fn_name = format!("{}_variant", name).to_lower_camel_case();
 
                     let outer_class_name = class_name;
                     for type_def in &case_type_defs {
@@ -947,9 +953,19 @@ impl<'a> TsInterface<'a> {
                             write!(
                                 &mut body,
                                 "
-                                    readonly {variant_enum_fn_name} = {variant_enum_name}.{class_name};
+                                    /**
+                                     * The variant of `{type_enum_name}` that corresponds to this class.
+                                     */
+                                    readonly type = {type_enum_name}.{class_name};
 
+                                    /**
+                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct type.
+                                     */
                                     as{class_name}(): this;
+
+                                    /**
+                                     * Return `true` if this object is an instance of `{class_name}`.
+                                     */
                                     is{class_name}(): this is {class_name};
                                 "
                             )
@@ -958,7 +974,14 @@ impl<'a> TsInterface<'a> {
                             write!(
                                 &mut body,
                                 "
+                                    /**
+                                     * Coerce this variant to a `{class_name}`, or `undefined` if this is not the correct type.
+                                     */
                                     as{class_name}(): undefined;
+
+                                    /**
+                                     * Return `true` if this object is an instance of `{class_name}`.
+                                     */
                                     is{class_name}(): false;
                                 "
                             )
@@ -1044,17 +1067,13 @@ impl<'a> TsInterface<'a> {
             .get(&self.resolve, &id)
             .enum_as_typescript_enum()
         {
-            if let Some(docs) = &docs.contents {
-                self.docs_raw(docs);
-            }
+            self.docs(&docs);
             self.src.push_str(&format!(
                 "export declare enum {} {{\n",
                 name.to_upper_camel_case()
             ));
             for case in enum_.cases.iter() {
-                if let Some(docs) = &case.docs.contents {
-                    self.docs_raw(docs);
-                }
+                self.docs(&case.docs);
                 let name = case.name.to_upper_camel_case();
                 self.src.push_str(&format!("{name} = '{name}',\n",));
             }
@@ -1081,7 +1100,7 @@ impl<'a> TsInterface<'a> {
                 }
             }
 
-            self.docs_raw(&complete_docs);
+            render_docs(&mut self.src, &complete_docs);
 
             self.src
                 .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
@@ -1172,4 +1191,12 @@ fn interface_goal_name(iface_name: &str) -> String {
     iface_name_sans_version
         .replace(['/', ':'], "-")
         .to_kebab_case()
+}
+
+fn render_docs(src: &mut Source, docs: &str) {
+    src.push_str("/**\n");
+    for line in docs.lines() {
+        src.push_str(&format!(" * {}\n", line.replace("*/", "*\\/")));
+    }
+    src.push_str(" */\n");
 }
