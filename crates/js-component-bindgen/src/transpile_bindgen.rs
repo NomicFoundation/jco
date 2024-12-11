@@ -1950,6 +1950,10 @@ impl<'a> Instantiator<'a, '_> {
                                                 .as_ref()
                                                 .unwrap()
                                                 .to_upper_camel_case();
+                                            self.ensure_local_resource_class(
+                                                Some(*type_id),
+                                                class_name.to_string(),
+                                            );
                                             uwriteln!(
                                                 self.src.js,
                                                 "{variant_enum_name}['{class_name}'] = '{class_name}';"
