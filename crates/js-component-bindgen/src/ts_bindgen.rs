@@ -717,7 +717,18 @@ impl<'a> TsInterface<'a> {
                         .payload_type_of_option_result_of_next_method_of_resource(&self.resolve)
                     {
                         let iface = self.resources.get_mut(resource).unwrap();
-                        iface.src.push_str(&"[Symbol.iterator](): Iterator<");
+                        iface.src.push_str(
+                            &"
+                                /**
+                                 * Returns an iterator over `",
+                        );
+                        iface.print_ty(&payload);
+                        iface.src.push_str(
+                            &"` objects. Called by the semantics of the for-of statement.
+                                 */
+                                [Symbol.iterator](): Iterator<
+                            ",
+                        );
                         iface.print_ty(&payload);
                         iface.src.push_str(">;\n");
                     }
@@ -920,8 +931,9 @@ impl<'a> TsInterface<'a> {
                 Type::Id(id).variant_case_type_defs_where_they_are_all_handles(self.resolve)
             {
                 self.docs(docs);
+                let type_union_name = name.to_upper_camel_case();
                 self.src
-                    .push_str(&format!("export type {} = ", name.to_upper_camel_case()));
+                    .push_str(&format!("export type {type_union_name} = "));
                 for (i, case_type_def) in case_type_defs.iter().enumerate() {
                     if i > 0 {
                         self.src.push_str(" | ");
@@ -931,14 +943,26 @@ impl<'a> TsInterface<'a> {
                 }
                 self.src.push_str(";\n");
 
-                let type_enum_name = format!("{}_type", name).to_upper_camel_case();
+                let type_enum_name = format!("{type_union_name}Type");
 
-                self.src
-                    .push_str(&format!("export enum {type_enum_name} {{\n"));
+                self.src.push_str(&format!(
+                    "
+                        /**
+                         * Enumerates different variants of the `{type_union_name}` type.
+                         */
+                        export enum {type_enum_name} {{
+                    "
+                ));
                 for type_def in &case_type_defs {
                     let class_name = type_def.name.as_ref().unwrap().to_upper_camel_case();
-                    self.src
-                        .push_str(&format!("{class_name} = '{class_name}',\n"));
+                    self.src.push_str(&format!(
+                        "
+                            /**
+                             * Represents a variant of type `{class_name}`. 
+                             */
+                            {class_name} = '{class_name}',
+                        "
+                    ));
                 }
                 self.src.push_str("}\n");
 
