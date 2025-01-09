@@ -14,15 +14,13 @@ pub use transpile_bindgen::{BindingsMode, InstantiationMode, TranspileOpts};
 use anyhow::Result;
 use transpile_bindgen::transpile_bindgen;
 
-use anyhow::{bail, Context};
-use wasmtime_environ::component::Export;
-use wasmtime_environ::component::{ComponentTypesBuilder, StaticModuleIndex};
-use wasmtime_environ::wasmparser::{Validator, WasmFeatures};
+use anyhow::{bail, ensure, Context};
+use wasmtime_environ::component::{ComponentTypesBuilder, Export, StaticModuleIndex};
 use wasmtime_environ::{PrimaryMap, ScopeVec, Tunables};
 use wit_component::DecodedWasm;
 
 use ts_bindgen::ts_bindgen;
-use wit_parser::{Resolve, Type, TypeDefKind, TypeId, WorldId};
+use wit_parser::{Package, Resolve, Stability, Type, TypeDefKind, TypeId, WorldId};
 
 /// Calls [`write!`] with the passed arguments and unwraps the result.
 ///
@@ -69,7 +67,8 @@ pub fn generate_types(
 ) -> Result<Vec<(String, Vec<u8>)>, anyhow::Error> {
     let mut files = files::Files::default();
 
-    ts_bindgen(&name, &resolve, world_id, &opts, &mut files);
+    ts_bindgen(&name, &resolve, world_id, &opts, &mut files)
+        .context("failed to generate Typescript bindings")?;
 
     let mut files_out: Vec<(String, Vec<u8>)> = Vec::new();
     for (name, source) in files.iter() {
@@ -82,7 +81,8 @@ pub fn generate_types(
 /// Outputs the file map and import and export metadata for the Transpilation
 #[cfg(feature = "transpile-bindgen")]
 pub fn transpile(component: &[u8], opts: TranspileOpts) -> Result<Transpiled, anyhow::Error> {
-    use wasmtime_environ::component::Translator;
+    use wasmparser::Validator;
+    use wasmtime_environ::component::{Component, Translator};
 
     let name = opts.name.clone();
     let mut files = files::Files::default();
@@ -97,7 +97,7 @@ pub fn transpile(component: &[u8], opts: TranspileOpts) -> Result<Transpiled, an
         .context("failed to extract interface information from component")?;
 
     let (resolve, world_id) = match decoded {
-        DecodedWasm::WitPackage(..) => bail!("unexpected wit package as input"),
+        DecodedWasm::WitPackage(_, _) => bail!("unexpected wit package as input"),
         DecodedWasm::Component(resolve, world_id) => (resolve, world_id),
     };
 
@@ -117,11 +117,8 @@ pub fn transpile(component: &[u8], opts: TranspileOpts) -> Result<Transpiled, an
     // that need to be executed to instantiate a component.
     let scope = ScopeVec::new();
     let tunables = Tunables::default_u32();
-    let mut types = ComponentTypesBuilder::default();
-    let mut validator = Validator::new_with_features(WasmFeatures {
-        component_model: true,
-        ..WasmFeatures::default()
-    });
+    let mut validator = Validator::default();
+    let mut types = ComponentTypesBuilder::new(&validator);
 
     let (component, modules) = Translator::new(&tunables, &mut validator, &mut types, &scope)
         .translate(component)
@@ -132,7 +129,8 @@ pub fn transpile(component: &[u8], opts: TranspileOpts) -> Result<Transpiled, an
         .map(|(_i, module)| core::Translation::new(module, opts.multi_memory))
         .collect::<Result<_>>()?;
 
-    let types = types.finish(&PrimaryMap::new(), Vec::new(), Vec::new());
+    let wasmtime_component = Component::default();
+    let types = types.finish(&wasmtime_component);
 
     // Insert all core wasm modules into the generated `Files` which will
     // end up getting used in the `generate_instantiate` method.
@@ -141,7 +139,8 @@ pub fn transpile(component: &[u8], opts: TranspileOpts) -> Result<Transpiled, an
     }
 
     if !opts.no_typescript {
-        ts_bindgen(&name, &resolve, world_id, &opts, &mut files);
+        ts_bindgen(&name, &resolve, world_id, &opts, &mut files)
+            .context("failed to generate Typescript bindings")?;
     }
 
     let (imports, exports) = transpile_bindgen(
@@ -175,4 +174,40 @@ pub fn dealias(resolve: &Resolve, mut id: TypeId) -> TypeId {
             _ => break id,
         }
     }
+}
+
+/// Check if an item (usually some form of [`WorldItem`]) should be allowed through the feature gate
+/// of a given package.
+fn feature_gate_allowed(
+    resolve: &Resolve,
+    package: &Package,
+    stability: &Stability,
+    item_name: &str,
+) -> Result<bool> {
+    Ok(match stability {
+        Stability::Unknown => true,
+        Stability::Stable { since, .. } => {
+            let Some(package_version) = package.name.version.as_ref() else {
+                // If the package version is missing (we're likely dealing with an unresolved package)
+                // and we can't really check much.
+                return Ok(true);
+            };
+
+            ensure!(
+                package_version >= since,
+                "feature gate on [{item_name}] refers to an unreleased (future) package version [{since}] (current package version is [{package_version}])"
+            );
+
+            // Stabilization (@since annotation) overrides features and deprecation
+            true
+        }
+        Stability::Unstable {
+            feature,
+            deprecated: _,
+        } => {
+            // If a @unstable feature is present but the related feature was not enabled
+            // or all features was not selected, exclude
+            resolve.all_features || resolve.features.contains(feature)
+        }
+    })
 }

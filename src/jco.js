@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { program, Option } from 'commander';
 import { opt } from './cmd/opt.js';
-import { transpile, types } from './cmd/transpile.js';
+import { transpile, types, guestTypes } from './cmd/transpile.js';
 import { run as runCmd, serve as serveCmd } from './cmd/run.js';
 import { parse, print, componentNew, componentEmbed, metadataAdd, metadataShow, componentWit } from './cmd/wasm-tools.js';
 import { componentize } from './cmd/componentize.js';
@@ -11,10 +11,20 @@ program
   .name('jco')
   .description(c`{bold jco - WebAssembly JS Component Tools}\n      JS Component Transpilation Bindgen & Wasm Tools for JS`)
   .usage('<command> [options]')
-  .version('1.2.4');
+  .version('1.8.1');
 
 function myParseInt(value) {
   return parseInt(value, 10);
+}
+
+/**
+* Option parsing that allows for collecting repeated arguments
+*
+* @param {string} value - the new value that is added
+* @param {string[]} previous - the existing list of values
+*/
+function collectOptions(value, previous) {
+  return previous.concat([value]);
 }
 
 program.command('componentize')
@@ -23,7 +33,10 @@ program.command('componentize')
   .argument('<js-source>', 'JS source file to build')
   .requiredOption('-w, --wit <path>', 'WIT path to build with')
   .option('-n, --world-name <name>', 'WIT world to build')
-  .addOption(new Option('-d, --disable <feature...>', 'disable WASI features').choices(['stdio', 'random', 'clocks']))
+  .option('--aot', 'Enable Weval AOT compilation of JS')
+  .option('--weval-bin <path>', 'Specify a custom weval binary to use')
+  .addOption(new Option('-d, --disable <feature...>', 'disable WASI features').choices(['clocks', 'http', 'random', 'stdio', 'all']))
+  // .addOption(new Option('-e, --enable <feature...>', 'enable WASI features').choices(['http']))
   .option('--preview2-adapter <adapter>', 'provide a custom preview2 adapter path')
   .requiredOption('-o, --out <out>', 'output component file')
   .action(asyncAction(componentize));
@@ -66,7 +79,21 @@ program.command('types')
   .option('--configuration-file <filename>', 'the path to a json5 configuration file to use for the code generation')
   .addOption(new Option('-I, --instantiation [mode]', 'type output for custom module instantiation').choices(['async', 'sync']).preset('async'))
   .option('-q, --quiet', 'disable output summary')
+  .option('--feature <feature>', 'enable one specific WIT feature (repeatable)', collectOptions, [])
+  .option('--all-features', 'enable all features')
   .action(asyncAction(types));
+
+program.command('guest-types')
+  .description('(experimental) Generate guest types for the given WIT')
+  .usage('<wit-path> -o <out-dir>')
+  .argument('<wit-path>', 'path to a WIT file or directory')
+  .option('--name <name>', 'custom output name')
+  .option('-n, --world-name <world>', 'WIT world to generate types for')
+  .requiredOption('-o, --out-dir <out-dir>', 'output directory')
+  .option('-q, --quiet', 'disable output summary')
+  .option('--feature <feature>', 'enable one specific WIT feature (repeatable)', collectOptions, [])
+  .option('--all-features', 'enable all features')
+  .action(asyncAction(guestTypes));
 
 program.command('run')
   .description('Run a WASI Command component')

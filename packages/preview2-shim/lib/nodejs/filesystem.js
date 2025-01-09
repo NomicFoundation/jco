@@ -352,7 +352,7 @@ class Descriptor {
         let isSymlink = false;
         try {
           isSymlink = lstatSync(fullPath).isSymbolicLink();
-        } catch (e) {
+        } catch {
           //
         }
         if (isSymlink) throw openFlags.directory ? "not-directory" : "loop";
@@ -361,26 +361,23 @@ class Descriptor {
         let isFile = false;
         try {
           isFile = !statSync(fullPath).isDirectory();
-        } catch (e) {
+        } catch {
           //
         }
         if (isFile) throw "not-directory";
       }
     }
     try {
-      const fd = openSync(fullPath, fsOpenFlags);
+      const fd = openSync(fullPath.endsWith('/') ? fullPath.slice(0, -1) : fullPath, fsOpenFlags);
       const descriptor = descriptorCreate(
         fd,
         descriptorFlags,
         fullPath,
         preopenEntries
       );
-      if (fullPath.endsWith("/") && isWindows) {
-        // check if its a directory
-        if (descriptor.getType() !== "directory") {
-          descriptor[symbolDispose]();
-          throw "not-directory";
-        }
+      if (fullPath.endsWith('/') && descriptor.getType() !== 'directory') {
+        descriptor[symbolDispose]();
+        throw "not-directory";
       }
       return descriptor;
     } catch (e) {
@@ -430,7 +427,7 @@ class Descriptor {
         let isDir = false;
         try {
           isDir = statSync(fullPath).isDirectory();
-        } catch (_) {
+        } catch {
           //
         }
         if (!isDir) throw isWindows ? "no-entry" : "not-directory";
@@ -449,7 +446,7 @@ class Descriptor {
         let isDir = false;
         try {
           isDir = statSync(fullPath).isDirectory();
-        } catch (e) {
+        } catch {
           //
         }
         throw isDir ? (isWindows ? "access" : (isMac ? "not-permitted" : "is-directory")) : "not-directory";
@@ -671,6 +668,7 @@ function convertFsError(e) {
     case "ENOSPC":
       return "insufficient-space";
     case "ENOTDIR":
+    case 'ERR_FS_EISDIR':
       return "not-directory";
     case "ENOTEMPTY":
       return "not-empty";
@@ -700,6 +698,13 @@ function convertFsError(e) {
       return "text-file-busy";
     case "EXDEV":
       return "cross-device";
+    case "UNKNOWN":
+      switch (e.errno) {
+        case -4094:
+          return "no-such-device";
+        default:
+          throw e;
+      }
     default:
       throw e;
   }

@@ -1,11 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use js_component_bindgen::{
-    generate_types,
-    source::wit_parser::{Resolve, UnresolvedPackage},
-    transpile,
-};
+use js_component_bindgen::{generate_types, source::wit_parser::Resolve, transpile};
 
 /// Calls [`write!`] with the passed arguments and unwraps the result.
 ///
@@ -82,6 +78,7 @@ impl Guest for JsComponentBindgenComponent {
             multi_memory: options.multi_memory.unwrap_or(false),
             configuration,
             import_bindings: options.import_bindings.map(Into::into),
+            guest: options.guest.unwrap_or(false),
         };
 
         let js_component_bindgen::Transpiled {
@@ -122,26 +119,30 @@ impl Guest for JsComponentBindgenComponent {
         let mut resolve = Resolve::default();
 
         let configuration = get_configuration(&opts.configuration_file)?;
-        let id = match opts.wit {
-            Wit::Source(source) => {
-                let pkg = UnresolvedPackage::parse(&PathBuf::from(format!("{name}.wit")), &source)
-                    .map_err(|e| e.to_string())?;
-                resolve.push(pkg).map_err(|e| e.to_string())?
+
+        // Add features if specified
+        match opts.features {
+            Some(EnabledFeatureSet::List(ref features)) => {
+                for f in features.iter() {
+                    resolve.features.insert(f.to_string());
+                }
             }
+            Some(EnabledFeatureSet::All) => {
+                resolve.all_features = true;
+            }
+            _ => {}
+        }
+
+        let ids = match opts.wit {
+            Wit::Source(source) => resolve
+                .push_str(format!("{name}.wit"), &source)
+                .map_err(|e| e.to_string())?,
             Wit::Path(path) => {
                 let path = PathBuf::from(path);
                 if path.is_dir() {
                     resolve.push_dir(&path).map_err(|e| e.to_string())?.0
                 } else {
-                    let contents = std::fs::read(&path)
-                        .with_context(|| format!("failed to read file {path:?}"))
-                        .map_err(|e| e.to_string())?;
-                    let text = match std::str::from_utf8(&contents) {
-                        Ok(s) => s,
-                        Err(_) => return Err("input file is not valid utf-8".into()),
-                    };
-                    let pkg = UnresolvedPackage::parse(&path, text).map_err(|e| e.to_string())?;
-                    resolve.push(pkg).map_err(|e| e.to_string())?
+                    resolve.push_file(&path).map_err(|e| e.to_string())?
                 }
             }
             Wit::Binary(_) => todo!(),
@@ -149,7 +150,7 @@ impl Guest for JsComponentBindgenComponent {
 
         let world_string = opts.world.map(|world| world.to_string());
         let world = resolve
-            .select_world(id, world_string.as_deref())
+            .select_world(ids, world_string.as_deref())
             .map_err(|e| e.to_string())?;
 
         let opts = js_component_bindgen::TranspileOpts {
@@ -166,6 +167,7 @@ impl Guest for JsComponentBindgenComponent {
             multi_memory: false,
             configuration,
             import_bindings: None,
+            guest: opts.guest.unwrap_or(false),
         };
 
         let files = generate_types(name, resolve, world, opts).map_err(|e| e.to_string())?;
@@ -180,7 +182,7 @@ fn get_configuration(
     match config_file_path {
         Some(path) => {
             let contents = std::fs::read_to_string(path)
-                .with_context(|| format!("failed to read configuration file {path}"))
+                .context(format!("failed to read configuration file {path}"))
                 .map_err(|e| e.to_string())?;
             let configuration: js_component_bindgen::configuration::Configuration =
                 serde_json::from_str(&contents).map_err(|e| e.to_string())?;

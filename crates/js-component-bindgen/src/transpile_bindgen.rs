@@ -11,12 +11,11 @@ use crate::source;
 use crate::{uwrite, uwriteln};
 use base64::{engine::general_purpose, Engine as _};
 use heck::*;
-use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::mem;
-use wasmtime_environ::component::Transcode;
+use wasmtime_environ::component::{ExportIndex, NameMap, NameMapNoIntern, Transcode};
 use wasmtime_environ::{
     component,
     component::{
@@ -72,6 +71,8 @@ pub struct TranspileOpts {
     pub multi_memory: bool,
     // General per-element configuration
     pub configuration: Configuration,
+    /// Whether to generate types for a guest module using module declarations.
+    pub guest: bool,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -121,6 +122,7 @@ struct JsBindgen<'a> {
     all_intrinsics: BTreeSet<Intrinsic>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn transpile_bindgen(
     name: &str,
     component: &ComponentTranslation,
@@ -195,11 +197,22 @@ pub fn transpile_bindgen(
         .iter()
         .map(|(export_name, canon_export_name)| {
             let export = if canon_export_name.contains(':') {
-                &instantiator.component.exports[*canon_export_name]
+                instantiator
+                    .component
+                    .exports
+                    .get(canon_export_name, &NameMapNoIntern)
+                    .unwrap()
             } else {
-                &instantiator.component.exports[&canon_export_name.to_kebab_case()]
+                instantiator
+                    .component
+                    .exports
+                    .get(&canon_export_name.to_kebab_case(), &NameMapNoIntern)
+                    .unwrap()
             };
-            (export_name.to_string(), export.clone())
+            (
+                export_name.to_string(),
+                instantiator.component.export_items[*export].clone(),
+            )
         })
         .collect();
 
@@ -259,38 +272,24 @@ impl<'a> JsBindgen<'a> {
             self.opts.instantiation.is_some(),
         );
 
-        match self.opts.instantiation {
-            Some(InstantiationMode::Async) => {
-                uwrite!(
-                    output,
-                    "\
-                        export async function instantiate(getCoreModule, imports, instantiateCore = WebAssembly.instantiate) {{
-                            {}
-                            {}
-                            {}
-                    ",
-                    &js_intrinsics as &str,
-                    &intrinsic_definitions as &str,
-                    &compilation_promises as &str,
-                )
-            }
-
-            Some(InstantiationMode::Sync) => {
-                uwrite!(
-                    output,
-                    "\
-                        export function instantiate(getCoreModule, imports, instantiateCore = (module, importObject) => new WebAssembly.Instance(module, importObject)) {{
-                            {}
-                            {}
-                            {}
-                    ",
-                    &js_intrinsics as &str,
-                    &intrinsic_definitions as &str,
-                    &compilation_promises as &str,
-                )
-            }
-
-            None => {}
+        if let Some(instantiation) = &self.opts.instantiation {
+            uwrite!(
+                output,
+                "\
+                    export function instantiate(getCoreModule, imports, instantiateCore = {}) {{
+                        {}
+                        {}
+                        {}
+                ",
+                match instantiation {
+                    InstantiationMode::Async => "WebAssembly.instantiate",
+                    InstantiationMode::Sync =>
+                        "(module, importObject) => new WebAssembly.Instance(module, importObject)",
+                },
+                &js_intrinsics as &str,
+                &intrinsic_definitions as &str,
+                &compilation_promises as &str,
+            );
         }
 
         let imports_object = if self.opts.instantiation.is_some() {
@@ -311,8 +310,31 @@ impl<'a> JsBindgen<'a> {
             uwrite!(
                 output,
                 "\
-                        {}\
-                        {};
+                        let gen = (function* init () {{
+                            {}\
+                            {};
+                        }})();
+                        let promise, resolve, reject;
+                        function runNext (value) {{
+                            try {{
+                                let done;
+                                do {{
+                                    ({{ value, done }} = gen.next(value));
+                                }} while (!(value instanceof Promise) && !done);
+                                if (done) {{
+                                    if (resolve) return resolve(value);
+                                    else return value;
+                                }}
+                                if (!promise) promise = new Promise((_resolve, _reject) => (resolve = _resolve, reject = _reject));
+                                value.then(nextVal => done ? resolve() : runNext(nextVal), reject);
+                            }}
+                            catch (e) {{
+                                if (reject) reject(e);
+                                else throw e;
+                            }}
+                        }}
+                        const maybeSyncReturn = runNext(null);
+                        return promise || maybeSyncReturn;
                     }}
                 ",
                 &self.src.js_init as &str,
@@ -320,7 +342,7 @@ impl<'a> JsBindgen<'a> {
             );
         } else {
             let (maybe_init_export, maybe_init) =
-                if self.opts.tla_compat && matches!(opts.instantiation, None) {
+                if self.opts.tla_compat && opts.instantiation.is_none() {
                     uwriteln!(self.src.js_init, "_initialized = true;");
                     (
                         "\
@@ -343,9 +365,32 @@ impl<'a> JsBindgen<'a> {
                     {}
                     {}
                     {}
-                    {maybe_init_export}const $init = (async() => {{
-                        {}\
-                        {}\
+                    {maybe_init_export}const $init = (() => {{
+                        let gen = (function* init () {{
+                            {}\
+                            {}\
+                        }})();
+                        let promise, resolve, reject;
+                        function runNext (value) {{
+                            try {{
+                                let done;
+                                do {{
+                                    ({{ value, done }} = gen.next(value));
+                                }} while (!(value instanceof Promise) && !done);
+                                if (done) {{
+                                    if (resolve) resolve(value);
+                                    else return value;
+                                }}
+                                if (!promise) promise = new Promise((_resolve, _reject) => (resolve = _resolve, reject = _reject));
+                                value.then(runNext, reject);
+                            }}
+                            catch (e) {{
+                                if (reject) reject(e);
+                                else throw e;
+                            }}
+                        }}
+                        const maybeSyncReturn = runNext(null);
+                        return promise || maybeSyncReturn;
                     }})();
                     {maybe_init}\
                 ",
@@ -428,7 +473,7 @@ impl<'a> Instantiator<'a, '_> {
                 .find(|(_, (impt_name, _))| impt_name == name)
             else {
                 match item {
-                    WorldItem::Interface(_) => unreachable!(),
+                    WorldItem::Interface { .. } => unreachable!(),
                     WorldItem::Function(_) => unreachable!(),
                     WorldItem::Type(ty) => {
                         assert!(!matches!(
@@ -440,12 +485,12 @@ impl<'a> Instantiator<'a, '_> {
                 continue;
             };
             match item {
-                WorldItem::Interface(iface) => {
+                WorldItem::Interface { id, stability: _ } => {
                     let TypeDef::ComponentInstance(instance) = import else {
                         unreachable!()
                     };
                     let import_ty = &self.types[*instance];
-                    let iface = &self.resolve.interfaces[*iface];
+                    let iface = &self.resolve.interfaces[*id];
                     for (ty_name, ty) in &iface.types {
                         match &import_ty.exports.get(ty_name) {
                             Some(TypeDef::Resource(resource)) => {
@@ -473,23 +518,26 @@ impl<'a> Instantiator<'a, '_> {
         self.exports_resource_types = self.imports_resource_types.clone();
         for (key, item) in &self.resolve.worlds[self.world].exports {
             let name = &self.resolve.name_world_key(key);
-            let (_, export) = self
+            let (_, export_idx) = self
                 .component
                 .exports
-                .iter()
+                .raw_iter()
                 .find(|(expt_name, _)| *expt_name == name)
                 .unwrap();
+            let export = &self.component.export_items[*export_idx];
             match item {
-                WorldItem::Interface(iface) => {
-                    let iface = &self.resolve.interfaces[*iface];
+                WorldItem::Interface { id, stability: _ } => {
+                    let iface = &self.resolve.interfaces[*id];
                     let Export::Instance { exports, .. } = &export else {
                         unreachable!()
                     };
                     for (ty_name, ty) in &iface.types {
-                        match exports.get(ty_name).unwrap() {
+                        match self.component.export_items
+                            [*exports.get(ty_name, &NameMapNoIntern).unwrap()]
+                        {
                             Export::Type(TypeDef::Resource(resource)) => {
                                 let ty = crate::dealias(self.resolve, *ty);
-                                let resource_idx = self.types[*resource].ty;
+                                let resource_idx = self.types[resource].ty;
                                 self.exports_resource_types.insert(ty, resource_idx);
                             }
                             Export::Type(_) => {}
@@ -554,17 +602,18 @@ impl<'a> Instantiator<'a, '_> {
             self.instantiation_global_initializer(init);
         }
 
-        // Trampolines after initializers so we have static module indices
-        for (i, trampoline) in self.translation.trampolines.iter() {
-            self.trampoline(i, trampoline);
-        }
-
         if self.gen.opts.instantiation.is_some() {
             let js_init = mem::take(&mut self.src.js_init);
             self.src.js.push_str(&js_init);
         }
 
         self.exports(&self.component.exports);
+
+        // Trampolines here so we have static module indices, and resource maps populated
+        // (both imports and exports may still be populting resource map)
+        for (i, trampoline) in self.translation.trampolines.iter() {
+            self.trampoline(i, trampoline);
+        }
     }
 
     fn ensure_local_resource_class(&mut self, type_id: Option<TypeId>, local_name: String) {
@@ -1030,7 +1079,7 @@ impl<'a> Instantiator<'a, '_> {
             Some(InstantiationMode::Async) | None => {
                 uwriteln!(
                     self.src.js_init,
-                    "({{ exports: exports{iu32} }} = await {instantiate}(await module{}{imports}));",
+                    "({{ exports: exports{iu32} }} = yield {instantiate}(yield module{}{imports}));",
                     idx.as_u32()
                 )
             }
@@ -1091,18 +1140,15 @@ impl<'a> Instantiator<'a, '_> {
         let (import_name, _) = &self.component.import_types[*import_index];
         let world_key = &self.imports[import_name];
 
-        // nested interfaces only currently possible through mapping
-        let (import_specifier, maybe_iface_member) = map_import(&self.gen.opts.map, import_name);
-
         let (func, func_name, iface_name) =
             match &self.resolve.worlds[self.world].imports[world_key] {
                 WorldItem::Function(func) => {
                     assert_eq!(path.len(), 0);
                     (func, import_name, None)
                 }
-                WorldItem::Interface(i) => {
+                WorldItem::Interface { id, stability: _ } => {
                     assert_eq!(path.len(), 1);
-                    let iface = &self.resolve.interfaces[*i];
+                    let iface = &self.resolve.interfaces[*id];
                     let func = &iface.functions[&path[0]];
                     (
                         func,
@@ -1113,6 +1159,29 @@ impl<'a> Instantiator<'a, '_> {
                 WorldItem::Type(_) => unreachable!(),
             };
 
+        // nested interfaces only currently possible through mapping
+        let (import_specifier, maybe_iface_member) = map_import(
+            &self.gen.opts.map,
+            if iface_name.is_some() {
+                import_name
+            } else {
+                match func.kind {
+                    FunctionKind::Method(_) => {
+                        let stripped = import_name.strip_prefix("[method]").unwrap();
+                        &stripped[0..stripped.find(".").unwrap()]
+                    }
+                    FunctionKind::Static(_) => {
+                        let stripped = import_name.strip_prefix("[static]").unwrap();
+                        &stripped[0..stripped.find(".").unwrap()]
+                    }
+                    FunctionKind::Constructor(_) => {
+                        import_name.strip_prefix("[constructor]").unwrap()
+                    }
+                    FunctionKind::Freestanding => import_name,
+                }
+            },
+        );
+
         let mut resource_map = ResourceMap::new();
         self.create_resource_fn_map(func, func_ty, &mut resource_map);
 
@@ -1121,7 +1190,7 @@ impl<'a> Instantiator<'a, '_> {
                 self.gen
                     .local_names
                     .get_or_create(
-                        &format!(
+                        format!(
                             "import:{}-{}-{}",
                             import_specifier,
                             maybe_iface_member.as_deref().unwrap_or(""),
@@ -1141,7 +1210,7 @@ impl<'a> Instantiator<'a, '_> {
                 format!(
                     "{}.{}",
                     Instantiator::resource_name(
-                        &self.resolve,
+                        self.resolve,
                         &mut self.gen.local_names,
                         resource_id,
                         &self.imports_resource_types
@@ -1154,7 +1223,7 @@ impl<'a> Instantiator<'a, '_> {
                 format!(
                     "new {}",
                     Instantiator::resource_name(
-                        &self.resolve,
+                        self.resolve,
                         &mut self.gen.local_names,
                         resource_id,
                         &self.imports_resource_types
@@ -1215,7 +1284,7 @@ impl<'a> Instantiator<'a, '_> {
                 FunctionKind::Method(resource_id) => format!(
                     "{}.prototype.{callee_name}",
                     Instantiator::resource_name(
-                        &self.resolve,
+                        self.resolve,
                         &mut self.gen.local_names,
                         resource_id,
                         &self.imports_resource_types
@@ -1237,14 +1306,14 @@ impl<'a> Instantiator<'a, '_> {
                     resource_tables.push(*tid);
                 }
 
-                if resource_tables.len() == 0 {
+                if resource_tables.is_empty() {
                     "".to_string()
                 } else {
                     format!(
                         " resourceTables: [{}],",
                         resource_tables
                             .iter()
-                            .map(|x| format!("handleTable{}", x.as_u32().to_string()))
+                            .map(|x| format!("handleTable{}", x.as_u32()))
                             .collect::<Vec<String>>()
                             .join(", ")
                     )
@@ -1261,15 +1330,15 @@ impl<'a> Instantiator<'a, '_> {
                     let symbol_cabi_lower = self.gen.intrinsic(Intrinsic::SymbolCabiLower);
                     if !self.gen.opts.valid_lifting_optimization {
                         uwriteln!(self.src.js_init, "if (!{callee_name}[{symbol_cabi_lower}]) {{
-                            throw new TypeError('import for \"{import_name}\" does not define a Symbol.for('cabiLower') optimized binding');
+                            throw new TypeError('import for \"{import_name}\" does not define a Symbol.for(\"cabiLower\") optimized binding');
                         }}");
                     }
-                    uwriteln!(self.src.js_init, "trampoline{} = {callee_name}[{symbol_cabi_lower}]({memory}{realloc}{post_return}{string_encoding}{resource_tables});", trampoline.as_u32());
+                    uwriteln!(self.src.js_init, "trampoline{} = {callee_name}[{symbol_cabi_lower}]({{{memory}{realloc}{post_return}{string_encoding}{resource_tables}}});", trampoline.as_u32());
                 }
                 Some(BindingsMode::DirectOptimized) => {
                     uwriteln!(
                         self.src.js_init,
-                        "trampoline{} = {callee_name}({memory}{realloc}{post_return}{string_encoding});",
+                        "trampoline{} = {callee_name}({{{memory}{realloc}{post_return}{string_encoding}}});",
                         trampoline.as_u32()
                     );
                 }
@@ -1285,7 +1354,7 @@ impl<'a> Instantiator<'a, '_> {
                 (
                     ty.name.as_ref().unwrap().to_upper_camel_case(),
                     Instantiator::resource_name(
-                        &self.resolve,
+                        self.resolve,
                         &mut self.gen.local_names,
                         tid,
                         &self.imports_resource_types,
@@ -1316,6 +1385,9 @@ impl<'a> Instantiator<'a, '_> {
         import_binding: Option<String>,
         local_name: String,
     ) {
+        if import_specifier.starts_with("webidl:") {
+            self.gen.intrinsic(Intrinsic::GlobalThisIdlProxy);
+        }
         // add the function import to the ESM bindgen
         if let Some(_iface_name) = iface_name {
             // mapping can be used to construct virtual nested namespaces
@@ -1335,6 +1407,10 @@ impl<'a> Instantiator<'a, '_> {
                     local_name,
                 );
             }
+        } else if let Some(iface_member) = iface_member {
+            self.gen
+                .esm_bindgen
+                .add_import_binding(&[import_specifier, iface_member.into()], local_name);
         } else if let Some(import_binding) = import_binding {
             self.gen
                 .esm_bindgen
@@ -1361,8 +1437,8 @@ impl<'a> Instantiator<'a, '_> {
             .is_none();
 
         let resource_id = crate::dealias(self.resolve, t);
-
         let resource = self.types[tid].ty;
+
         if let Some(resource_idx) = self.component.defined_resource_index(resource) {
             let resource_def = self
                 .component
@@ -1397,16 +1473,24 @@ impl<'a> Instantiator<'a, '_> {
                 wit_parser::TypeOwner::Interface(iface) => {
                     match &self.resolve.interfaces[iface].name {
                         Some(name) => (WorldKey::Interface(iface), Some(name.as_str())),
-                        None => (
-                            self.resolve.worlds[self.world]
+                        None => {
+                            let key = self.resolve.worlds[self.world]
                                 .imports
                                 .iter()
-                                .find(|&(_, item)| *item == WorldItem::Interface(iface))
+                                .find(|&(_, item)| match item {
+                                    WorldItem::Interface { id, .. } => *id == iface,
+                                    _ => false,
+                                })
                                 .unwrap()
-                                .0
-                                .clone(),
-                            None,
-                        ),
+                                .0;
+                            (
+                                key.clone(),
+                                match key {
+                                    WorldKey::Name(ref name) => Some(name.as_str()),
+                                    WorldKey::Interface(_) => None,
+                                },
+                            )
+                        }
                     }
                 }
                 wit_parser::TypeOwner::None => unimplemented!(),
@@ -1425,7 +1509,11 @@ impl<'a> Instantiator<'a, '_> {
                 import_specifier,
                 iface_name,
                 maybe_iface_member.as_deref(),
-                Some(resource_name),
+                if iface_name.is_some() {
+                    Some(resource_name)
+                } else {
+                    None
+                },
                 local_name_str.to_string(),
             );
 
@@ -1519,6 +1607,7 @@ impl<'a> Instantiator<'a, '_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bindgen(
         &mut self,
         nparams: usize,
@@ -1577,7 +1666,7 @@ impl<'a> Instantiator<'a, '_> {
 
         if self.gen.opts.tla_compat
             && matches!(abi, AbiVariant::GuestExport)
-            && matches!(self.gen.opts.instantiation, None)
+            && self.gen.opts.instantiation.is_none()
         {
             let throw_uninitialized = self.gen.intrinsic(Intrinsic::ThrowUninitialized);
             uwrite!(
@@ -1589,7 +1678,7 @@ impl<'a> Instantiator<'a, '_> {
         }
 
         let mut f = FunctionBindgen {
-            resource_map: &resource_map,
+            resource_map,
             cur_resource_borrows: false,
             intrinsics: &mut self.gen.all_intrinsics,
             valid_lifting_optimization: self.gen.opts.valid_lifting_optimization,
@@ -1766,8 +1855,9 @@ impl<'a> Instantiator<'a, '_> {
         format!("exports{i}{}", maybe_quote_member(name))
     }
 
-    fn exports(&mut self, exports: &IndexMap<String, Export>) {
-        for (export_name, export) in exports.iter() {
+    fn exports(&mut self, exports: &NameMap<String, ExportIndex>) {
+        for (export_name, export_idx) in exports.raw_iter() {
+            let export = &self.component.export_items[*export_idx];
             let world_key = &self.exports[export_name];
             let item = &self.resolve.worlds[self.world].exports[world_key];
             let mut resource_map = ResourceMap::new();
@@ -1779,7 +1869,7 @@ impl<'a> Instantiator<'a, '_> {
                 } => {
                     let func = match item {
                         WorldItem::Function(f) => f,
-                        WorldItem::Interface(_) | WorldItem::Type(_) => unreachable!(),
+                        WorldItem::Interface { .. } | WorldItem::Type(_) => unreachable!(),
                     };
                     self.create_resource_fn_map(func, *func_ty, &mut resource_map);
 
@@ -1788,7 +1878,7 @@ impl<'a> Instantiator<'a, '_> {
                     | FunctionKind::Static(resource_id) = func.kind
                     {
                         Instantiator::resource_name(
-                            &self.resolve,
+                            self.resolve,
                             &mut self.gen.local_names,
                             resource_id,
                             &self.exports_resource_types,
@@ -1825,10 +1915,11 @@ impl<'a> Instantiator<'a, '_> {
                 }
                 Export::Instance { exports, .. } => {
                     let id = match item {
-                        WorldItem::Interface(id) => *id,
+                        WorldItem::Interface { id, stability: _ } => *id,
                         WorldItem::Function(_) | WorldItem::Type(_) => unreachable!(),
                     };
-                    for (func_name, export) in exports {
+                    for (func_name, export_idx) in exports.raw_iter() {
+                        let export = &self.component.export_items[*export_idx];
                         let (def, options, func_ty) = match export {
                             Export::LiftedFunction { func, options, ty } => (func, options, ty),
                             Export::Type(_) => continue, // ignored
@@ -1844,7 +1935,7 @@ impl<'a> Instantiator<'a, '_> {
                         | FunctionKind::Static(resource_id) = func.kind
                         {
                             Instantiator::resource_name(
-                                &self.resolve,
+                                self.resolve,
                                 &mut self.gen.local_names,
                                 resource_id,
                                 &self.exports_resource_types,
@@ -1856,8 +1947,8 @@ impl<'a> Instantiator<'a, '_> {
 
                         self.export_bindgen(
                             &local_name,
-                            &def,
-                            &options,
+                            def,
+                            options,
                             func,
                             export_name,
                             &resource_map,
@@ -2006,8 +2097,7 @@ impl<'a> Instantiator<'a, '_> {
                 Export::Type(_) => {}
 
                 // This can't be tested at this time so leave it unimplemented
-                Export::ModuleStatic(_) => unimplemented!(),
-                Export::ModuleImport { .. } => unimplemented!(),
+                Export::ModuleStatic { .. } | Export::ModuleImport { .. } => unimplemented!(),
             }
         }
         self.gen.esm_bindgen.populate_export_aliases();

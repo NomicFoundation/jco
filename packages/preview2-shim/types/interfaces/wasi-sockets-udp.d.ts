@@ -78,11 +78,11 @@ export class IncomingDatagramStream {
   * - <https://learn.microsoft.com/en-us/previous-versions/windows/desktop/legacy/ms741687(v=vs.85)>
   * - <https://man.freebsd.org/cgi/man.cgi?query=recv&sektion=2>
   */
-  receive(maxResults: bigint): IncomingDatagram[];
+  receive(maxResults: bigint): Array<IncomingDatagram>;
   /**
   * Create a `pollable` which will resolve once the stream is ready to receive again.
   * 
-  * Note: this function is here for WASI Preview2 only.
+  * Note: this function is here for WASI 0.2 only.
   * It's planned to be removed when `future` is natively supported in Preview3.
   */
   subscribe(): Pollable;
@@ -139,11 +139,11 @@ export class OutgoingDatagramStream {
   * - <https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-wsasendmsg>
   * - <https://man.freebsd.org/cgi/man.cgi?query=send&sektion=2>
   */
-  send(datagrams: OutgoingDatagram[]): bigint;
+  send(datagrams: Array<OutgoingDatagram>): bigint;
   /**
   * Create a `pollable` which will resolve once the stream is ready to send again.
   * 
-  * Note: this function is here for WASI Preview2 only.
+  * Note: this function is here for WASI 0.2 only.
   * It's planned to be removed when `future` is natively supported in Preview3.
   */
   subscribe(): Pollable;
@@ -290,7 +290,7 @@ export class UdpSocket {
       /**
       * Create a `pollable` which will resolve once the socket is ready for I/O.
       * 
-      * Note: this function is here for WASI Preview2 only.
+      * Note: this function is here for WASI 0.2 only.
       * It's planned to be removed when `future` is natively supported in Preview3.
       */
       subscribe(): Pollable;

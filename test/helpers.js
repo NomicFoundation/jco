@@ -1,11 +1,10 @@
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { argv, execArgv } from "node:process";
+import { normalize, sep } from "node:path";
+import { mkdtemp } from "node:fs/promises";
 
 export const jcoPath = "src/jco.js";
-const multiMemory =
-  Number(process.versions.node.split(".")[0]) >= 21
-    ? ["--experimental-wasm-multi-memory"]
-    : [];
 
 export async function exec(cmd, ...args) {
   let stdout = "",
@@ -26,4 +25,13 @@ export async function exec(cmd, ...args) {
     );
   });
   return { stdout, stderr };
+}
+
+/**
+ * Securely creates a temporary directory and returns its path.
+ *
+ * The new directory is created using `fsPromises.mkdtemp()`.
+ */
+export async function getTmpDir() {
+  return await mkdtemp(normalize(tmpdir() + sep));
 }

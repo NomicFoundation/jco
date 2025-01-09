@@ -16,7 +16,7 @@ import { platform } from "node:process";
 
 const isWindows = platform === "win32";
 
-export async function apiTest(fixtures) {
+export async function apiTest(_fixtures) {
   suite("API", () => {
     test("Transpile", async () => {
       const name = "flavorful";
@@ -24,7 +24,7 @@ export async function apiTest(fixtures) {
         `test/fixtures/components/${name}.component.wasm`
       );
       const { files, imports, exports } = await transpile(component, { name });
-      strictEqual(imports.length, 2);
+      strictEqual(imports.length, 4);
       strictEqual(exports.length, 3);
       deepStrictEqual(exports[0], ["test", "instance"]);
       ok(files[name + ".js"]);
@@ -43,10 +43,10 @@ export async function apiTest(fixtures) {
         optimize: true,
         base64Cutoff: 0,
       });
-      strictEqual(imports.length, 2);
+      strictEqual(imports.length, 4);
       strictEqual(exports.length, 3);
       deepStrictEqual(exports[0], ["test", "instance"]);
-      ok(files[name + ".js"].length < 11_000);
+      ok(files[name + ".js"].length < 28_000);
     });
 
     test("Transpile to JS", async () => {
@@ -56,7 +56,7 @@ export async function apiTest(fixtures) {
       );
       const { files, imports, exports } = await transpile(component, {
         map: {
-          "test*": "./*.js",
+          "test:flavorful/*": "./*.js",
         },
         name,
         validLiftingOptimization: true,
@@ -64,14 +64,13 @@ export async function apiTest(fixtures) {
         base64Cutoff: 0,
         js: true,
       });
-      strictEqual(imports.length, 2);
+      strictEqual(imports.length, 4);
       strictEqual(exports.length, 3);
       deepStrictEqual(exports[0], ["test", "instance"]);
       deepStrictEqual(exports[1], ["test:flavorful/test", "instance"]);
       deepStrictEqual(exports[2], ["testImports", "function"]);
       const source = Buffer.from(files[name + ".js"]).toString();
-      ok(source.includes("./wasi.js"));
-      ok(source.includes("testwasi"));
+      ok(source.includes("./test.js"));
       ok(source.includes("FUNCTION_TABLE"));
       for (let i = 0; i < 2; i++) ok(source.includes(exports[i][0]));
     });
@@ -87,7 +86,7 @@ export async function apiTest(fixtures) {
           "test:flavorful/*": "#*import",
         },
       });
-      strictEqual(imports.length, 2);
+      strictEqual(imports.length, 4);
       strictEqual(imports[0], "#testimport");
       const source = Buffer.from(files[name + ".js"]).toString();
       ok(source.includes("'#testimport'"));
@@ -99,8 +98,20 @@ export async function apiTest(fixtures) {
       });
      strictEqual(Object.keys(files).length, 2);
      strictEqual(Object.keys(files)[0], 'flavorful.d.ts');
+     strictEqual(Object.keys(files)[1], 'interfaces/test-flavorful-test.d.ts');
      ok(Buffer.from(files[Object.keys(files)[0]]).includes('export const test'));
+     ok(Buffer.from(files[Object.keys(files)[1]]).includes('export namespace TestFlavorfulTest {'));
     });
+    
+    test('Type generation (declare imports)', async () => {
+      const files = await types('test/fixtures/wit', {
+        worldName: 'test:flavorful/flavorful',
+        guest: true,
+      });
+     strictEqual(Object.keys(files).length, 2);
+     strictEqual(Object.keys(files)[1], 'interfaces/test-flavorful-test.d.ts');
+     ok(Buffer.from(files[Object.keys(files)[1]]).includes('declare module \'test:flavorful/test\' {'));
+    })
 
     test("Optimize", async () => {
       const component = await readFile(
@@ -109,7 +120,7 @@ export async function apiTest(fixtures) {
       const { component: optimizedComponent } = await opt(component);
       ok(optimizedComponent.byteLength < component.byteLength);
     });
-
+    
     test("Print & Parse", async () => {
       const component = await readFile(
         `test/fixtures/components/flavorful.component.wasm`
@@ -149,13 +160,13 @@ export async function apiTest(fixtures) {
       const meta = await metadataShow(newComponent);
       deepStrictEqual(meta[0].metaType, {
         tag: "component",
-        val: 4,
+        val: 5,
       });
       deepStrictEqual(meta[1].producers, [
         [
           "processed-by",
           [
-            ["wit-component", "0.202.0"],
+            ["wit-component", "0.219.1"],
             ["dummy-gen", "test"],
           ],
         ],
@@ -190,13 +201,13 @@ export async function apiTest(fixtures) {
       const meta = await metadataShow(newComponent);
       deepStrictEqual(meta[0].metaType, {
         tag: "component",
-        val: 1,
+        val: 2,
       });
       deepStrictEqual(meta[1].producers, [
         [
           "processed-by",
           [
-            ["wit-component", "0.202.0"],
+            ["wit-component", "0.219.1"],
             ["dummy-gen", "test"],
           ],
         ],
