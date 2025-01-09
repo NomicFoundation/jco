@@ -85,6 +85,7 @@ fn transpile(component_path: &str, name: String, optimize: bool) -> Result<()> {
         multi_memory: true,
         configuration: Default::default(),
         import_bindings: Some(BindingsMode::Js),
+        guest: false,
     };
 
     let transpiled = js_component_bindgen::transpile(&adapted_component, opts)?;

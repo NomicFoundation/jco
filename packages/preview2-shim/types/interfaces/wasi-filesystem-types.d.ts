@@ -95,7 +95,7 @@ export interface DescriptorFlags {
    */
   dataIntegritySync?: boolean,
   /**
-   * Requests that reads be performed at the same level of integrety
+   * Requests that reads be performed at the same level of integrity
    * requested for writes. This is similar to `O_RSYNC` in POSIX.
    * 
    * The precise semantics of this operation have not yet been defined for
@@ -568,12 +568,6 @@ export class Descriptor {
   linkAt(oldPathFlags: PathFlags, oldPath: string, newDescriptor: Descriptor, newPath: string): void;
   /**
   * Open a file or directory.
-  * 
-  * The returned descriptor is not guaranteed to be the lowest-numbered
-  * descriptor not currently open/ it is randomized to prevent applications
-  * from depending on making assumptions about indexes, since this is
-  * error-prone in multi-threaded contexts. The returned descriptor is
-  * guaranteed to be less than 2**31.
   * 
   * If `flags` contains `descriptor-flags::mutate-directory`, and the base
   * descriptor doesn't have `descriptor-flags::mutate-directory` set,

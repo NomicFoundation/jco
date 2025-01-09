@@ -1,33 +1,24 @@
+import { resolve } from "node:path";
+import { execArgv, env } from "node:process";
 import { deepStrictEqual, ok, strictEqual } from "node:assert";
 import {
   mkdir,
+  readdir,
   readFile,
   rm,
   symlink,
   writeFile,
-  mkdtemp,
 } from "node:fs/promises";
+
 import { fileURLToPath, pathToFileURL } from "url";
-import { exec, jcoPath } from "./helpers.js";
-import { tmpdir, EOL } from "node:os";
-import { resolve, normalize, sep } from "node:path";
-import { execArgv } from "node:process";
+import { exec, jcoPath, getTmpDir } from "./helpers.js";
 
 const multiMemory = execArgv.includes("--experimental-wasm-multi-memory")
   ? ["--multi-memory"]
   : [];
 
-export async function cliTest(fixtures) {
+export async function cliTest(_fixtures) {
   suite("CLI", () => {
-    /**
-     * Securely creates a temporary directory and returns its path.
-     *
-     * The new directory is created using `fsPromises.mkdtemp()`.
-     */
-    async function getTmpDir() {
-      return await mkdtemp(normalize(tmpdir() + sep));
-    }
-
     var tmpDir;
     var outDir;
     var outFile;
@@ -193,6 +184,81 @@ export async function cliTest(fixtures) {
       strictEqual(stderr, "");
       const source = await readFile(`${outDir}/flavorful.d.ts`, "utf8");
       ok(source.includes("export const test"));
+      const iface = await readFile(`${outDir}/interfaces/test-flavorful-test.d.ts`, "utf8");
+      ok(iface.includes("export namespace TestFlavorfulTest {"));
+    });
+
+    test("Type generation (specific features)", async () => {
+      const { stderr, stdout } = await exec(
+        jcoPath,
+        "types",
+        "test/fixtures/wits/feature-gates-unstable.wit",
+        "--world-name",
+        "test:feature-gates-unstable/gated",
+        "--feature",
+        "enable-c",
+        "-o",
+        outDir
+      );
+      strictEqual(stderr, "");
+      const source = await readFile(`${outDir}/interfaces/test-feature-gates-unstable-foo.d.ts`, "utf8");
+      ok(source.includes("export function a(): void;"));
+      ok(!source.includes("export function b(): void;"));
+      ok(source.includes("export function c(): void;"));
+    });
+
+    test("Type generation (all features)", async () => {
+      const { stderr, stdout } = await exec(
+        jcoPath,
+        "types",
+        "test/fixtures/wits/feature-gates-unstable.wit",
+        "--world-name",
+        "test:feature-gates-unstable/gated",
+        "--all-features",
+        "-o",
+        outDir
+      );
+      strictEqual(stderr, "");
+      const source = await readFile(`${outDir}/interfaces/test-feature-gates-unstable-foo.d.ts`, "utf8");
+      ok(source.includes("export function a(): void;"));
+      ok(source.includes("export function b(): void;"));
+      ok(source.includes("export function c(): void;"));
+    });
+
+    // NOTE: enabling all features and a specific feature means --all-features takes precedence
+    test("Type generation (all features + feature)", async () => {
+      const { stderr, stdout } = await exec(
+        jcoPath,
+        "types",
+        "test/fixtures/wits/feature-gates-unstable.wit",
+        "--world-name",
+        "test:feature-gates-unstable/gated",
+        "--all-features",
+        "--feature",
+        "enable-c",
+        "-o",
+        outDir
+      );
+      strictEqual(stderr, "");
+      const source = await readFile(`${outDir}/interfaces/test-feature-gates-unstable-foo.d.ts`, "utf8");
+      ok(source.includes("export function a(): void;"));
+      ok(source.includes("export function b(): void;"));
+      ok(source.includes("export function c(): void;"));
+    });
+
+    test("Type generation (declare imports)", async () => {
+      const { stderr } = await exec(
+        jcoPath,
+        "guest-types",
+        "test/fixtures/wit",
+        "--world-name",
+        "test:flavorful/flavorful",
+        "-o",
+        outDir
+      );
+      strictEqual(stderr, "");
+      const source = await readFile(`${outDir}/interfaces/test-flavorful-test.d.ts`, "utf8");
+      ok(source.includes("declare module 'test:flavorful/test' {"));
     });
 
     test("TypeScript naming checks", async () => {
@@ -228,7 +294,7 @@ export async function cliTest(fixtures) {
         "--name",
         name,
         "--map",
-        "testwasi=./wasi.js",
+        "test:flavorful/test=./flavorful.js",
         "--valid-lifting-optimization",
         "--tla-compat",
         "--js",
@@ -238,8 +304,7 @@ export async function cliTest(fixtures) {
       );
       strictEqual(stderr, "");
       const source = await readFile(`${outDir}/${name}.js`, "utf8");
-      ok(source.includes("./wasi.js"));
-      ok(source.includes("testwasi"));
+      ok(source.includes("./flavorful.js"));
       ok(source.includes("FUNCTION_TABLE"));
       ok(source.includes("export {\n  $init"));
     });
@@ -408,12 +473,12 @@ export async function cliTest(fixtures) {
         );
         strictEqual(stderr, "");
         const meta = JSON.parse(stdout);
-        deepStrictEqual(meta[0].metaType, { tag: "component", val: 4 });
+        deepStrictEqual(meta[0].metaType, { tag: "component", val: 5 });
         deepStrictEqual(meta[1].producers, [
           [
             "processed-by",
             [
-              ["wit-component", "0.202.0"],
+              ["wit-component", "0.219.1"],
               ["dummy-gen", "test"],
             ],
           ],
@@ -457,21 +522,23 @@ export async function cliTest(fixtures) {
     });
 
     test("Componentize", async () => {
-      const { stdout, stderr } = await exec(
+      const args = [
         jcoPath,
         "componentize",
         "test/fixtures/componentize/source.js",
         "-d",
-        "clocks",
-        "-d",
-        "random",
-        "-d",
-        "stdio",
+        "all",
+        "--aot",
         "-w",
         "test/fixtures/componentize/source.wit",
         "-o",
         outFile
-      );
+      ];
+      if (env.WEVAL_BIN_PATH) {
+        args.push("--weval-bin", env.WEVAL_BIN_PATH);
+      }
+
+      const { stdout, stderr } = await exec(...args);
       strictEqual(stderr, "");
       {
         const { stderr } = await exec(

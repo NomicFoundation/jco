@@ -4,7 +4,7 @@ const { InputStream, OutputStream } = streams;
 
 const symbolDispose = Symbol.dispose ?? Symbol.for('dispose');
 
-let _env = [], _args = [], _cwd = null;
+let _env = [], _args = [], _cwd = "/";
 export function _setEnv (envObj) {
   _env = Object.entries(envObj);
 }
@@ -29,16 +29,19 @@ export const environment = {
 };
 
 class ComponentExit extends Error {
-  constructor(ok) {
-    super(`Component exited ${ok ? 'successfully' : 'with error'}`);
+  constructor(code) {
+    super(`Component exited ${code === 0 ? 'successfully' : 'with error'}`);
     this.exitError = true;
-    this.ok = ok;
+    this.code = code;
   }
 }
 
 export const exit = {
   exit (status) {
-    throw new ComponentExit(status.tag === 'err' ? true : false);
+    throw new ComponentExit(status.tag === 'err' ? 1 : 0);
+  },
+  exitWithCode (code) {
+    throw new ComponentExit(code);
   }
 };
 
@@ -75,6 +78,10 @@ const stdinStream = new InputStream({
 let textDecoder = new TextDecoder();
 const stdoutStream = new OutputStream({
   write (contents) {
+    if (contents[contents.length - 1] == 10) {
+      // console.log already appends a new line
+      contents = contents.subarray(0, contents.length - 1);
+    }
     console.log(textDecoder.decode(contents));
   },
   blockingFlush () {
@@ -84,10 +91,13 @@ const stdoutStream = new OutputStream({
 });
 const stderrStream = new OutputStream({
   write (contents) {
+    if (contents[contents.length - 1] == 10) {
+      // console.error already appends a new line
+      contents = contents.subarray(0, contents.length - 1);
+    }
     console.error(textDecoder.decode(contents));
   },
   blockingFlush () {
-
   },
   [symbolDispose] () {
 

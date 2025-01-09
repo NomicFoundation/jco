@@ -19,6 +19,11 @@ export async function types(witPath, opts) {
   await writeFiles(files, opts.quiet ? false : 'Generated Type Files');
 }
 
+export async function guestTypes (witPath, opts) {
+  const files = await typesComponent(witPath, { ...opts, guest: true });
+  await writeFiles(files, opts.quiet ? false : 'Generated Guest Typescript Definition Files (.d.ts)');
+}
+
 /**
  * @param {string} witPath
  * @param {{
@@ -28,6 +33,8 @@ export async function types(witPath, opts) {
  *   tlaCompat?: bool,
  *   outDir?: string,
  *   configurationFile?: string,
+ *   features?: string[] | 'all',
+ *   guest?: bool,
  * }} opts
  * @returns {Promise<{ [filename: string]: Uint8Array }>}
  */
@@ -43,12 +50,22 @@ export async function typesComponent(witPath, opts) {
   let outDir = (opts.outDir ?? '').replace(/\\/g, '/');
   if (!outDir.endsWith('/') && outDir !== '')
     outDir += '/';
+
+  let features = null;
+  if (opts.allFeatures) {
+    features = { tag: 'all' };
+  } else if (Array.isArray(opts.feature)) {
+    features = { tag: 'list', val: opts.feature };
+  }
+
   return Object.fromEntries(generateTypes(name, {
     wit: { tag: 'path', val: (isWindows ? '//?/' : '') + resolve(witPath) },
     instantiation,
     tlaCompat: opts.tlaCompat ?? false,
     world: opts.worldName,
     configurationFile: opts.configurationFile,
+    features,
+    guest: opts.guest ?? false,
   }).map(([name, file]) => [`${outDir}${name}`, file]));
 }
 
@@ -61,7 +78,7 @@ async function writeFiles(files, summaryTitle) {
     return;
   console.log(c`
   {bold ${summaryTitle}:}
-  
+
 ${table(Object.entries(files).map(([name, source]) => [
     c` - {italic ${name}}  `,
     c`{black.italic ${sizeStr(source.length)}}`
@@ -94,20 +111,14 @@ export async function transpile(componentPath, opts, program) {
   await writeFiles(files, opts.quiet ? false : 'Transpiled JS Component Files');
 }
 
-let WASM_2_JS;
-try {
-  WASM_2_JS = fileURLToPath(new URL('../../node_modules/binaryen/bin/wasm2js', import.meta.url));
-} catch {
-  WASM_2_JS = new URL('../../node_modules/binaryen/bin/wasm2js', import.meta.url);
-}
-
 /**
  * @param {Uint8Array} source
  * @returns {Promise<Uint8Array>}
  */
-async function wasm2Js(source) {
+async function wasm2Js (source) {
+  const wasm2jsPath = fileURLToPath(import.meta.resolve('binaryen/bin/wasm2js'));
   try {
-    return await spawnIOTmp(WASM_2_JS, source, ['-Oz', '-o']);
+    return await spawnIOTmp(wasm2jsPath, source, ['-Oz', '-o']);
   } catch (e) {
     if (e.toString().includes('BasicBlock requested'))
       return wasm2Js(source);
@@ -121,7 +132,7 @@ async function wasm2Js(source) {
  * @param {{
  *   name: string,
  *   instantiation?: 'async' | 'sync',
- *   importBindings?: 'js' | 'optimized', 'hybrid', 'direct-optimized',
+ *   importBindings?: 'js' | 'optimized' | 'hybrid' | 'direct-optimized',
  *   map?: Record<string, string>,
  *   validLiftingOptimization?: bool,
  *   tracing?: bool,
@@ -135,6 +146,7 @@ async function wasm2Js(source) {
  *   outDir?: string,
  *   multiMemory?: bool,
  *   configurationFile?: string,
+ *   experimentalIdlImports?: bool,
  *   optArgs?: string[],
  * }} opts
  * @returns {Promise<{ files: { [filename: string]: Uint8Array }, imports: string[], exports: [string, 'function' | 'instance'][] }>}
@@ -187,6 +199,7 @@ export async function transpileComponent(component, opts = {}) {
     noNamespacedExports: opts.namespacedExports === false,
     multiMemory: opts.multiMemory === true,
     configurationFile: opts.configurationFile,
+    idlImports: opts.experimentalIdlImports === true,
   });
 
   let outDir = (opts.outDir ?? '').replace(/\\/g, '/');

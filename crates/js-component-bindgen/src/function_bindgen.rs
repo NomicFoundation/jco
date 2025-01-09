@@ -979,17 +979,18 @@ impl Bindgen for FunctionBindgen<'_> {
                 let memory = self.memory.as_ref().unwrap();
                 let realloc = self.realloc.unwrap();
 
-                let size = self.sizes.size(element);
-                let align = self.sizes.align(element);
+                let size = self.sizes.size(element).size_wasm32();
+                let align = ArchitectureSize::from(self.sizes.align(element)).size_wasm32();
                 uwriteln!(self.src, "var val{tmp} = {};", operands[0]);
                 if matches!(element, Type::U8) {
                     uwriteln!(self.src, "var len{tmp} = val{tmp}.byteLength;");
                 } else {
                     uwriteln!(self.src, "var len{tmp} = val{tmp}.length;");
                 }
+
                 uwriteln!(
                     self.src,
-                    "var ptr{tmp} = {realloc}(0, 0, {align}, len{tmp} * {size});"
+                    "var ptr{tmp} = {realloc}(0, 0, {align}, len{tmp} * {size});",
                 );
                 // TODO: this is the wrong endianness
                 if matches!(element, Type::U8) {
@@ -1020,7 +1021,7 @@ impl Bindgen for FunctionBindgen<'_> {
                 uwriteln!(
                     self.src,
                     "var result{tmp} = new {array_ty}({memory}.buffer.slice(ptr{tmp}, ptr{tmp} + len{tmp} * {}));",
-                    self.sizes.size(element),
+                    self.sizes.size(element).size_wasm32(),
                 );
                 results.push(format!("result{tmp}"));
             }
@@ -1085,8 +1086,8 @@ impl Bindgen for FunctionBindgen<'_> {
                 let vec = format!("vec{}", tmp);
                 let result = format!("result{}", tmp);
                 let len = format!("len{}", tmp);
-                let size = self.sizes.size(element);
-                let align = self.sizes.align(element);
+                let size = self.sizes.size(element).size_wasm32();
+                let align = ArchitectureSize::from(self.sizes.align(element)).size_wasm32();
 
                 // first store our vec-to-lower in a temporary since we'll
                 // reference it multiple times.
@@ -1115,7 +1116,7 @@ impl Bindgen for FunctionBindgen<'_> {
             Instruction::ListLift { element, .. } => {
                 let (body, body_results) = self.blocks.pop().unwrap();
                 let tmp = self.tmp();
-                let size = self.sizes.size(element);
+                let size = self.sizes.size(element).size_wasm32();
                 let len = format!("len{tmp}");
                 uwriteln!(self.src, "var {len} = {};", operands[1]);
                 let base = format!("base{tmp}");
@@ -1222,7 +1223,7 @@ impl Bindgen for FunctionBindgen<'_> {
                         uwriteln!(
                             self.src,
                             "for (const rsc of {cur_resource_borrows}) {{
-                                rsc[{symbol_resource_handle}] = null;
+                                rsc[{symbol_resource_handle}] = undefined;
                             }}
                             {cur_resource_borrows} = [];"
                         );
@@ -1232,9 +1233,8 @@ impl Bindgen for FunctionBindgen<'_> {
                             "for (const {{ rsc, drop }} of {cur_resource_borrows}) {{
                                 if (rsc[{symbol_resource_handle}]) {{
                                     drop(rsc[{symbol_resource_handle}]);
-                                    delete rsc[{symbol_resource_handle}];
+                                    rsc[{symbol_resource_handle}] = undefined;
                                 }}
-                                {cur_resource_borrows}[i][{symbol_resource_handle}] = null;
                             }}
                             {cur_resource_borrows} = [];"
                         );
@@ -1244,24 +1244,41 @@ impl Bindgen for FunctionBindgen<'_> {
             }
 
             Instruction::Return { amt, .. } => {
-                if let Some(f) = &self.post_return {
-                    uwriteln!(self.src, "{f}({});", if *amt > 0 { "ret" } else { "" });
-                }
-
-                if self.err == ErrHandling::ThrowResultErr {
+                if *amt == 0 {
+                    if let Some(f) = &self.post_return {
+                        uwriteln!(self.src, "{f}();");
+                    }
+                } else if *amt == 1 && self.err == ErrHandling::ThrowResultErr {
+                    let component_err = self.intrinsic(Intrinsic::ComponentError);
                     let op = &operands[0];
+                    uwriteln!(self.src, "const retVal = {op};");
+                    if let Some(f) = &self.post_return {
+                        uwriteln!(self.src, "{f}(ret);");
+                    }
                     uwriteln!(
                         self.src,
-                        "if ({op}.tag === 'err') {{
-                            throw {op}.val;
+                        "if (typeof retVal === 'object' && retVal.tag === 'err') {{
+                            throw new {component_err}(retVal.val);
                         }}
-                        return {op}.val;"
+                        return retVal.val;"
                     );
                 } else {
-                    match amt {
-                        0 => {}
-                        1 => uwriteln!(self.src, "return {};", operands[0]),
-                        _ => uwriteln!(self.src, "return [{}];", operands.join(", ")),
+                    let ret_assign = if self.post_return.is_some() {
+                        "const retVal ="
+                    } else {
+                        "return"
+                    };
+                    if *amt == 1 {
+                        uwriteln!(self.src, "{ret_assign} {};", operands[0]);
+                    } else {
+                        uwriteln!(self.src, "{ret_assign} [{}];", operands.join(", "));
+                    }
+                    if let Some(f) = &self.post_return {
+                        uwriteln!(
+                            self.src,
+                            "{f}(ret);
+                            return retVal;"
+                        );
                     }
                 }
             }
@@ -1338,7 +1355,7 @@ impl Bindgen for FunctionBindgen<'_> {
                                             finalizationRegistry{tid}.unregister({rsc});
                                             {rsc_table_remove}(handleTable{tid}, {handle});
                                             {rsc}[{symbol_dispose}] = {empty_func};
-                                            {rsc}[{symbol_resource_handle}] = null;
+                                            {rsc}[{symbol_resource_handle}] = undefined;
                                             {dtor}(handleTable{tid}[({handle} << 1) + 1] & ~{rsc_flag});
                                         }}}});"
                                     );
@@ -1471,7 +1488,7 @@ impl Bindgen for FunctionBindgen<'_> {
                                     }}
                                     finalizationRegistry{tid}.unregister({op});
                                     {op}[{symbol_dispose}] = {empty_func};
-                                    {op}[{symbol_resource_handle}] = null;",
+                                    {op}[{symbol_resource_handle}] = undefined;",
                                 );
                             } else {
                                 // When expecting a borrow, the JS resource provided will always be an own

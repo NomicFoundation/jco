@@ -37,13 +37,12 @@
 //! supported because, again, Wasmtime doesn't use it at this time.
 
 use anyhow::{bail, Result};
-use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use wasm_encoder::*;
+use wasmparser::collections::IndexMap;
 use wasmparser::*;
 use wasmtime_environ::component::CoreDef;
-use wasmtime_environ::{wasmparser, ModuleTranslation};
-use wasmtime_environ::{EntityIndex, MemoryIndex, PrimaryMap};
+use wasmtime_environ::{EntityIndex, MemoryIndex, ModuleTranslation, PrimaryMap};
 
 fn unimplemented_try_table() -> wasm_encoder::Instruction<'static> {
     unimplemented!()
@@ -79,7 +78,6 @@ pub enum AugmentedOp {
     I64Store,
     F32Store,
     F64Store,
-
     MemorySize,
 }
 
@@ -88,16 +86,14 @@ impl<'a> Translation<'a> {
         if multi_memory {
             return Ok(Translation::Normal(translation));
         }
-        let mut features = WasmFeatures {
-            multi_memory: false,
-            ..Default::default()
-        };
+        let mut features = WasmFeatures::default();
+        features.set(WasmFeatures::MULTI_MEMORY, false);
         match Validator::new_with_features(features).validate_all(translation.wasm) {
             // This module validates without multi-memory, no need to augment
             // it
             Ok(_) => return Ok(Translation::Normal(translation)),
             Err(e) => {
-                features.multi_memory = true;
+                features.set(WasmFeatures::MULTI_MEMORY, true);
                 match Validator::new_with_features(features).validate_all(translation.wasm) {
                     // This module validates with multi-memory, so fall through
                     // to augmentation.
@@ -222,9 +218,6 @@ impl Augmenter<'_> {
         // records various bits of information about the module within `self`.
         for payload in Parser::new(0).parse_all(self.translation.wasm) {
             match payload? {
-                Payload::Version { .. } => {}
-                Payload::End(_) => {}
-
                 Payload::TypeSection(s) => {
                     for grp in s.into_iter_err_on_gc_types() {
                         self.types.push(grp?);
@@ -250,28 +243,21 @@ impl Augmenter<'_> {
                         self.imports.push(i);
                     }
                 }
-
                 Payload::ExportSection(s) => {
                     for e in s {
                         let e = e?;
                         self.exports.push(e);
                     }
                 }
-
                 Payload::FunctionSection(s) => {
                     for ty in s {
                         let ty = ty?;
                         self.local_func_tys.push(ty);
                     }
                 }
-
-                Payload::CodeSectionStart { .. } => {}
                 Payload::CodeSectionEntry(body) => {
                     self.local_funcs.push(body);
                 }
-
-                // Ignore all custom sections for now
-                Payload::CustomSection(_) => {}
 
                 // NB: these sections are theoretically possible to handle but
                 // are not required at this time.
@@ -301,6 +287,8 @@ impl Augmenter<'_> {
                 | Payload::ComponentTypeSection(_) => {
                     bail!("component section found in module using multiple memories")
                 }
+
+                _ => {}
             }
         }
 
@@ -348,7 +336,7 @@ impl Augmenter<'_> {
         // before.
         let mut types = TypeSection::new();
         for ty in &self.types {
-            types.function(
+            types.ty().function(
                 ty.params().iter().map(|v| valtype(*v)),
                 ty.results().iter().map(|v| valtype(*v)),
             );
@@ -364,12 +352,14 @@ impl Augmenter<'_> {
                 TypeRef::Global(g) => EntityType::Global(wasm_encoder::GlobalType {
                     mutable: g.mutable,
                     val_type: valtype(g.content_type),
+                    shared: g.shared,
                 }),
                 TypeRef::Memory(m) => EntityType::Memory(wasm_encoder::MemoryType {
                     maximum: m.maximum,
                     minimum: m.initial,
                     memory64: m.memory64,
                     shared: m.shared,
+                    page_size_log2: m.page_size_log2,
                 }),
                 TypeRef::Table(_) => unimplemented!(),
                 TypeRef::Tag(_) => unimplemented!(),
@@ -480,7 +470,7 @@ fn valtype(ty: wasmparser::ValType) -> wasm_encoder::ValType {
 struct CollectMemOps<'a, 'b>(&'a mut Augmenter<'b>);
 
 macro_rules! define_visit {
-    ($(@$p:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
             #[allow(unreachable_code)]
             fn $visit(&mut self $( $( ,$arg: $argty)* )?) {
@@ -533,7 +523,7 @@ macro_rules! define_visit {
     (augment $self:ident I32Store16 $memarg:ident) => {
         $self.0.augment_op($memarg.memory, AugmentedOp::I32Store16);
     };
-    (augment $self:ident MemorySize $mem:ident $byte:ident) => {
+    (augment $self:ident MemorySize $mem:ident) => {
         $self.0.augment_op($mem, AugmentedOp::MemorySize);
     };
 
@@ -570,35 +560,35 @@ impl AugmentedOp {
             | AugmentedOp::I32Load8S
             | AugmentedOp::I32Load16U
             | AugmentedOp::I32Load16S => {
-                section.function([I32, I32], [I32]);
+                section.ty().function([I32, I32], [I32]);
             }
             AugmentedOp::I64Load => {
-                section.function([I32, I32], [I64]);
+                section.ty().function([I32, I32], [I64]);
             }
             AugmentedOp::F32Load => {
-                section.function([I32, I32], [F32]);
+                section.ty().function([I32, I32], [F32]);
             }
             AugmentedOp::F64Load => {
-                section.function([I32, I32], [F64]);
+                section.ty().function([I32, I32], [F64]);
             }
 
             // Stores, like loads, take an additional argument than usual which
             // is the static offset on the store instruction.
             AugmentedOp::I32Store | AugmentedOp::I32Store8 | AugmentedOp::I32Store16 => {
-                section.function([I32, I32, I32], []);
+                section.ty().function([I32, I32, I32], []);
             }
             AugmentedOp::I64Store => {
-                section.function([I32, I64, I32], []);
+                section.ty().function([I32, I64, I32], []);
             }
             AugmentedOp::F32Store => {
-                section.function([I32, F32, I32], []);
+                section.ty().function([I32, F32, I32], []);
             }
             AugmentedOp::F64Store => {
-                section.function([I32, F64, I32], []);
+                section.ty().function([I32, F64, I32], []);
             }
 
             AugmentedOp::MemorySize => {
-                section.function([], [I32]);
+                section.ty().function([], [I32]);
             }
         }
     }
@@ -615,8 +605,9 @@ macro_rules! define_translate {
     // This is the base case where all methods are defined and the body of each
     // method delegates to a recursive invocation of this macro to hit one of
     // the cases below.
-    ($(@$p:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident)*) => {
+    ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
         $(
+            #[allow(unreachable_code)]
             #[allow(dropping_copy_types)]
             fn $visit(&mut self $(, $($arg: $argty),*)?)  {
                 #[allow(unused_imports)]
@@ -672,7 +663,7 @@ macro_rules! define_translate {
     (translate $self:ident F64Store $memarg:ident) => {{
         $self.augment(AugmentedOp::F64Store, F64Store, $memarg)
     }};
-    (translate $self:ident MemorySize $mem:ident $byte:ident) => {{
+    (translate $self:ident MemorySize $mem:ident) => {{
         if $mem < 1 {
             $self.func.instruction(&MemorySize($mem));
         } else {
@@ -707,7 +698,7 @@ macro_rules! define_translate {
         CallIndirect { ty: $ty, table: $table }
     });
     (mk ReturnCallIndirect $ty:ident $table:ident) => (
-        ReturnCallIndirect { ty: $ty, table: $table }
+        ReturnCallIndirect { type_index: $ty, table_index: $table }
     );
     (mk I32Const $v:ident) => (I32Const($v));
     (mk I64Const $v:ident) => (I64Const($v));
@@ -730,6 +721,7 @@ macro_rules! define_translate {
     // Individual cases of mapping one argument type to another, similar to the
     // `define_visit` macro above.
     (map $self:ident $arg:ident memarg) => {$self.memarg($arg)};
+    (map $self:ident $arg:ident ordering) => {$self.ordering($arg)};
     (map $self:ident $arg:ident blockty) => {$self.blockty($arg)};
     (map $self:ident $arg:ident hty) => {$self.heapty($arg)};
     (map $self:ident $arg:ident tag_index) => {$arg};
@@ -768,6 +760,12 @@ macro_rules! define_translate {
     (map $self:ident $arg:ident array_type_index_src) => ($self.remap(Item::Type, $arg).unwrap());
     (map $self:ident $arg:ident from_ref_type) => ($self.refty(&$arg).unwrap());
     (map $self:ident $arg:ident to_ref_type) => ($self.refty(&$arg).unwrap());
+    (map $self:ident $arg:ident cont_type_index) => ($self.remap(Item::Type, $arg).unwrap());
+    (map $self:ident $arg:ident argument_index) => ($self.remap(Item::Type, $arg).unwrap());
+    (map $self:ident $arg:ident result_index) => ($self.remap(Item::Type, $arg).unwrap());
+    (map $self:ident $arg:ident resume_table) => ((
+        unimplemented!()
+    ));
 }
 
 impl<'a> VisitOperator<'a> for Translator<'_, 'a> {
@@ -812,6 +810,13 @@ impl Translator<'_, '_> {
             align: ty.align.into(),
             offset: ty.offset,
             memory_index: self.augmenter.remap_memory(ty.memory),
+        }
+    }
+
+    fn ordering(&self, ty: wasmparser::Ordering) -> wasm_encoder::Ordering {
+        match ty {
+            wasmparser::Ordering::AcqRel => wasm_encoder::Ordering::AcqRel,
+            wasmparser::Ordering::SeqCst => wasm_encoder::Ordering::SeqCst,
         }
     }
 
