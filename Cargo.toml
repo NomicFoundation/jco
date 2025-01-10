@@ -21,6 +21,9 @@ resolver = "2"
 edition = "2021"
 version = "1.8.1"
 
+# [patch.crates-io]
+# wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", tag = "v1.223.0" }
+
 [profile.release]
 codegen-units = 1
 debug = false
@@ -43,19 +46,25 @@ js-component-bindgen = { path = "./crates/js-component-bindgen" }
 serde = "1.0.203"
 serde_json = "1.0.118"
 structopt = "0.3.26"
-wasm-encoder = "0.219.1"
-wasm-metadata = "0.219.1"
-wasmparser = "0.219.1"
-wasmprinter = "0.219.1"
-wasmtime-environ = { version = "27.0.0", features = [
-    "component-model",
-    "compile",
-] }
+# wasm-encoder = "0.219.1"
+# wasm-metadata = "0.219.1"
+# wasmparser = "0.219.1"
+# wasmprinter = "0.219.1"
+# wit-parser = "0.219.1"
+wasm-encoder = "0.223.0"
+wasm-metadata = "0.223.0"
+wasmparser = "0.223.0"
+wasmprinter = "0.223.0"
+wit-parser = "0.223.0"
+wasmtime-environ = { git = "https://github.com/bytecodealliance/wasmtime", rev = "4f52f29", features = ["component-model", "compile"]}
+# wasmtime-environ = { version = "27.0.0", features = [
+#     "component-model",
+#     "compile",
+# ] }
 wat = "1.218.0"
-wit-bindgen = "0.34.0"
-wit-bindgen-core = "0.34.0"
+wit-bindgen = "0.36.0"
+wit-bindgen-core = "0.36.0"
 wit-component = { version = "0.219.1", features = ["dummy-module"] }
-wit-parser = "0.219.1"
 xshell = "0.2.6"
 
 [dev-dependencies]
