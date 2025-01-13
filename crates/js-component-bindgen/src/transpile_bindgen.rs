@@ -1689,6 +1689,10 @@ impl<'a> Instantiator<'a, '_> {
                 match abi {
                     AbiVariant::GuestExport => ErrHandling::ThrowResultErr,
                     AbiVariant::GuestImport => ErrHandling::ResultCatchHandler,
+                    AbiVariant::GuestImportAsync => unimplemented!("Guest import"),
+                    AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful => {
+                        unimplemented!("Guest export")
+                    }
                 }
             } else {
                 ErrHandling::None
@@ -1721,9 +1725,14 @@ impl<'a> Instantiator<'a, '_> {
             match abi {
                 AbiVariant::GuestImport => LiftLower::LiftArgsLowerResults,
                 AbiVariant::GuestExport => LiftLower::LowerArgsLiftResults,
+                AbiVariant::GuestImportAsync => unimplemented!("Guest import"),
+                AbiVariant::GuestExportAsync | AbiVariant::GuestExportAsyncStackful => {
+                    unimplemented!("Guest export")
+                }
             },
             func,
             &mut f,
+            false,
         );
         self.src.js(&f.src);
         self.src.js("}");

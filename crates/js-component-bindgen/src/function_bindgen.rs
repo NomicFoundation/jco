@@ -1156,7 +1156,7 @@ impl Bindgen for FunctionBindgen<'_> {
                 }
             }
 
-            Instruction::CallInterface { func } => {
+            Instruction::CallInterface { func, .. } => {
                 let results_length = func.results.len();
                 let call = if self.callee_resource_dynamic {
                     format!(
@@ -1596,6 +1596,20 @@ impl Bindgen for FunctionBindgen<'_> {
             | Instruction::GuestDeallocateString
             | Instruction::GuestDeallocateList { .. }
             | Instruction::GuestDeallocateVariant { .. } => unimplemented!("Guest deallocation"),
+            Instruction::FutureLower { .. } | Instruction::FutureLift { .. } => {
+                unimplemented!("Future")
+            }
+            Instruction::StreamLower { .. } | Instruction::StreamLift { .. } => {
+                unimplemented!("Stream")
+            }
+            Instruction::ErrorContextLower { .. } | Instruction::ErrorContextLift { .. } => {
+                unimplemented!("Error context")
+            }
+            Instruction::AsyncMalloc { .. }
+            | Instruction::AsyncCallWasm { .. }
+            | Instruction::AsyncPostCallInterface { .. }
+            | Instruction::AsyncCallReturn { .. } => unimplemented!("Async calls"),
+            Instruction::Flush { .. } => unimplemented!("Flush"),
         }
     }
 }

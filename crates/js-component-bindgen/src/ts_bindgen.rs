@@ -163,11 +163,12 @@ pub fn ts_bindgen(
                         TypeDefKind::Result(r) => gen.type_result(*tid, name, r, &ty.docs),
                         TypeDefKind::List(t) => gen.type_list(*tid, name, t, &ty.docs),
                         TypeDefKind::Type(t) => gen.type_alias(*tid, name, t, None, &ty.docs),
+                        TypeDefKind::Resource => {}
+                        TypeDefKind::ErrorContext => {}
                         TypeDefKind::Future(_) => todo!("generate for future"),
                         TypeDefKind::Stream(_) => todo!("generate for stream"),
-                        TypeDefKind::Unknown => unreachable!(),
-                        TypeDefKind::Resource => {}
                         TypeDefKind::Handle(_) => todo!(),
+                        TypeDefKind::Unknown => unreachable!(),
                     }
                     let output = gen.finish();
                     bindgen.src.push_str(&output);
@@ -678,11 +679,12 @@ impl<'a> TsInterface<'a> {
                 TypeDefKind::Result(r) => self.type_result(*id, name, r, &ty.docs),
                 TypeDefKind::List(t) => self.type_list(*id, name, t, &ty.docs),
                 TypeDefKind::Type(t) => self.type_alias(*id, name, t, Some(iface_id), &ty.docs),
+                TypeDefKind::Resource => {}
+                TypeDefKind::ErrorContext => {}
                 TypeDefKind::Future(_) => todo!("generate for future"),
                 TypeDefKind::Stream(_) => todo!("generate for stream"),
-                TypeDefKind::Unknown => unreachable!(),
-                TypeDefKind::Resource => {}
                 TypeDefKind::Handle(_) => todo!(),
+                TypeDefKind::Unknown => unreachable!(),
             }
         }
     }
@@ -749,6 +751,7 @@ impl<'a> TsInterface<'a> {
                         }
                         panic!("anonymous resource handle");
                     }
+                    TypeDefKind::ErrorContext => {}
                 }
             }
         }
