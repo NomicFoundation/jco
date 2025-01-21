@@ -580,28 +580,6 @@ impl TsBindgen {
                         }
                     }
                 }
-                TypeDefKind::Enum(_) => {
-                    if gen
-                        .configuration
-                        .get(&resolve, type_id)
-                        .enum_as_typescript_enum()
-                    {
-                        let name = ty.name.as_ref().unwrap();
-                        uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
-                    }
-                }
-                TypeDefKind::Variant(_) => {
-                    if gen
-                        .configuration
-                        .get(&resolve, type_id)
-                        .variant_as_direct_union_of_resource_classes()
-                    {
-                        let name = ty.name.as_ref().unwrap();
-                        uwriteln!(gen.src, "export {{ {} }};", name.to_upper_camel_case());
-                        let type_enum_name = format!("{}_type", name).to_upper_camel_case();
-                        uwriteln!(gen.src, "export {{ {type_enum_name} }};");
-                    }
-                }
                 _ => {}
             }
         }
