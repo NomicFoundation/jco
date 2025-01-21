@@ -1190,7 +1190,7 @@ impl<'a> TsInterface<'a> {
         {
             self.docs(&docs);
             self.src.push_str(&format!(
-                "export declare enum {} {{\n",
+                "export enum {} {{\n",
                 name.to_upper_camel_case()
             ));
             for case in enum_.cases.iter() {
