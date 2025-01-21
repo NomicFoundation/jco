@@ -1609,7 +1609,7 @@ impl Bindgen for FunctionBindgen<'_> {
             | Instruction::AsyncCallWasm { .. }
             | Instruction::AsyncPostCallInterface { .. }
             | Instruction::AsyncCallReturn { .. } => unimplemented!("Async calls"),
-            Instruction::Flush { .. } => unimplemented!("Flush"),
+            Instruction::Flush { amt } => results.extend_from_slice(&operands[0..*amt]),
         }
     }
 }
