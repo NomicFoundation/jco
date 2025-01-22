@@ -1249,7 +1249,6 @@ impl Bindgen for FunctionBindgen<'_> {
                         uwriteln!(self.src, "{f}();");
                     }
                 } else if *amt == 1 && self.err == ErrHandling::ThrowResultErr {
-                    let component_err = self.intrinsic(Intrinsic::ComponentError);
                     let op = &operands[0];
                     uwriteln!(self.src, "const retVal = {op};");
                     if let Some(f) = &self.post_return {
@@ -1258,7 +1257,7 @@ impl Bindgen for FunctionBindgen<'_> {
                     uwriteln!(
                         self.src,
                         "if (typeof retVal === 'object' && retVal.tag === 'err') {{
-                            throw new {component_err}(retVal.val);
+                            throw retVal.val;
                         }}
                         return retVal.val;"
                     );
