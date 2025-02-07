@@ -39,6 +39,8 @@ pub(crate) fn run() -> Result<()> {
             multi_memory: false,
             configuration: Default::default(),
             import_bindings: Some(BindingsMode::Js),
+            guest: false,
+            async_mode: None,
         };
 
         let files = generate_types(name, resolve, world, opts)?;

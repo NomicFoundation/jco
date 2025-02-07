@@ -1,15 +1,22 @@
 use crate::configuration::{Configuration, TypeExtensions as _};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write;
+
+use anyhow::{Context as _, Result};
+use heck::{ToKebabCase, ToLowerCamelCase, ToUpperCamelCase};
+use log::debug;
+use wit_bindgen_core::wit_parser::{
+    Docs, Enum, Flags, Function, FunctionKind, Handle, InterfaceId, Record, Resolve, Result_,
+    Tuple, Type, TypeDefKind, TypeId, TypeOwner, Variant, WorldId, WorldItem, WorldKey,
+};
+
 use crate::files::Files;
 use crate::function_bindgen::{array_ty, as_nullable, maybe_null};
 use crate::names::{is_js_identifier, maybe_quote_id, LocalNames, RESERVED_KEYWORDS};
 use crate::source::Source;
-use crate::transpile_bindgen::{parse_world_key, InstantiationMode, TranspileOpts};
-use crate::{dealias, uwrite, uwriteln};
-use heck::*;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashSet};
-use std::fmt::Write;
-use wit_parser::*;
+use crate::transpile_bindgen::{parse_world_key, AsyncMode, InstantiationMode, TranspileOpts};
+use crate::{dealias, feature_gate_allowed, uwrite, uwriteln};
 
 struct TsBindgen {
     /// The source code for the "main" file that's going to be created for the
@@ -25,9 +32,13 @@ struct TsBindgen {
     import_object: Source,
     /// TypeScript definitions which will become the export object
     export_object: Source,
-
     // Whether enums should be generated as typescript types
     configuration: Configuration,
+    /// Whether or not the types should be generated for a guest module
+    guest: bool,
+
+    async_imports: HashSet<String>,
+    async_exports: HashSet<String>,
 }
 
 /// Used to generate a `*.d.ts` file for each imported and exported interface for
@@ -39,6 +50,7 @@ struct TsInterface<'a> {
     src: Source,
     is_root: bool,
     resolve: &'a Resolve,
+    has_constructor: bool,
     needs_ty_option: bool,
     needs_ty_result: bool,
     local_names: LocalNames,
@@ -54,7 +66,13 @@ pub fn ts_bindgen(
     id: WorldId,
     opts: &TranspileOpts,
     files: &mut Files,
-) {
+) -> Result<()> {
+    let (async_imports, async_exports) = match opts.async_mode.clone() {
+        None | Some(AsyncMode::Sync) => (Default::default(), Default::default()),
+        Some(AsyncMode::JavaScriptPromiseIntegration { imports, exports }) => {
+            (imports.into_iter().collect(), exports.into_iter().collect())
+        }
+    };
     let mut bindgen = TsBindgen {
         src: Source::default(),
         interface_names: LocalNames::default(),
@@ -62,46 +80,87 @@ pub fn ts_bindgen(
         import_object: Source::default(),
         export_object: Source::default(),
         configuration: opts.configuration.clone(),
+        guest: opts.guest,
+        async_imports,
+        async_exports,
     };
 
     let world = &resolve.worlds[id];
+    let package = resolve
+        .packages
+        .get(
+            world
+                .package
+                .context("unexpectedly missing package in world")?,
+        )
+        .context("unexpectedly missing package in world for ID")?;
 
     {
         let mut funcs = Vec::new();
         let mut interface_imports = BTreeMap::new();
         for (name, import) in world.imports.iter() {
             match import {
-                WorldItem::Function(f) => match name {
-                    WorldKey::Name(name) => funcs.push((name.to_string(), f)),
-                    WorldKey::Interface(id) => funcs.push((resolve.id_of(*id).unwrap(), f)),
-                },
-                WorldItem::Interface(id) => match name {
-                    WorldKey::Name(name) => {
-                        // kebab name -> direct ns namespace import
-                        bindgen.import_interface(resolve, name, *id, files);
+                WorldItem::Function(f) => {
+                    if !feature_gate_allowed(resolve, package, &f.stability, &f.name)
+                        .context("failed to check feature gate for imported function")?
+                    {
+                        debug!("skipping imported function [{}] feature gate due to feature gate visibility", f.name);
+                        continue;
                     }
-                    // namespaced ns:pkg/iface
-                    // TODO: map support
-                    WorldKey::Interface(id) => {
+
+                    match name {
+                        WorldKey::Name(name) => funcs.push((name.to_string(), f)),
+                        WorldKey::Interface(id) => funcs.push((resolve.id_of(*id).unwrap(), f)),
+                    }
+                }
+                WorldItem::Interface { id, stability } => {
+                    let iface_name = &resolve.interfaces[*id]
+                        .name
+                        .as_deref()
+                        .unwrap_or("<unnamed>");
+                    if !feature_gate_allowed(resolve, package, stability, iface_name)
+                        .context("failed to check feature gate for imported interface")?
+                    {
                         let import_specifier = resolve.id_of(*id).unwrap();
                         let (_, _, iface) = parse_world_key(&import_specifier).unwrap();
-                        let iface = iface.to_string();
-                        match interface_imports.entry(import_specifier) {
-                            Entry::Vacant(entry) => {
-                                entry.insert(vec![("*".into(), id)]);
-                            }
-                            Entry::Occupied(ref mut entry) => {
-                                entry.get_mut().push((iface, id));
+                        debug!("skipping imported interface [{}] feature gate due to feature gate visibility", iface.to_string());
+                        continue;
+                    }
+
+                    match name {
+                        WorldKey::Name(name) => {
+                            // kebab name -> direct ns namespace import
+                            bindgen.import_interface(resolve, name, *id, files);
+                        }
+                        // namespaced ns:pkg/iface
+                        // TODO: map support
+                        WorldKey::Interface(id) => {
+                            let import_specifier = resolve.id_of(*id).unwrap();
+                            let (_, _, iface) = parse_world_key(&import_specifier).unwrap();
+                            let iface = iface.to_string();
+                            match interface_imports.entry(import_specifier) {
+                                Entry::Vacant(entry) => {
+                                    entry.insert(vec![("*".into(), id)]);
+                                }
+                                Entry::Occupied(ref mut entry) => {
+                                    entry.get_mut().push((iface, id));
+                                }
                             }
                         }
                     }
-                },
+                }
                 WorldItem::Type(tid) => {
                     let ty = &resolve.types[*tid];
-
                     let name = ty.name.as_ref().unwrap();
 
-                    let mut gen = bindgen.ts_interface(resolve, true);
+                    if !feature_gate_allowed(resolve, package, &ty.stability, name)
+                        .context("failed to check feature gate for imported type")?
+                    {
+                        debug!("skipping imported type [{name}] feature gate due to feature gate visibility");
+                        continue;
+                    }
+
+                    let mut gen = TsInterface::new(resolve, true, &bindgen.configuration);
                     gen.docs(&ty.docs);
                     match &ty.kind {
                         TypeDefKind::Record(record) => {
@@ -117,10 +176,13 @@ pub fn ts_bindgen(
                         TypeDefKind::Result(r) => gen.type_result(*tid, name, r, &ty.docs),
                         TypeDefKind::List(t) => gen.type_list(*tid, name, t, &ty.docs),
                         TypeDefKind::Type(t) => gen.type_alias(*tid, name, t, None, &ty.docs),
-                        TypeDefKind::Future(_) => todo!("generate for future"),
-                        TypeDefKind::Stream(_) => todo!("generate for stream"),
+                        TypeDefKind::Future(_) => todo!("(async impl) generate for future"),
+                        TypeDefKind::Stream(_) => todo!("(async impl) generate for stream"),
+                        TypeDefKind::ErrorContext => {
+                            todo!("(async impl) generate for error-context")
+                        }
                         TypeDefKind::Unknown => unreachable!(),
-                        TypeDefKind::Resource => todo!(),
+                        TypeDefKind::Resource => {}
                         TypeDefKind::Handle(_) => todo!(),
                     }
                     let output = gen.finish();
@@ -142,6 +204,7 @@ pub fn ts_bindgen(
     let mut funcs = Vec::new();
     let mut seen_names = HashSet::new();
     let mut export_aliases: Vec<(String, String)> = Vec::new();
+
     for (name, export) in world.exports.iter() {
         match export {
             WorldItem::Function(f) => {
@@ -149,10 +212,16 @@ pub fn ts_bindgen(
                     WorldKey::Name(export_name) => export_name,
                     WorldKey::Interface(_) => unreachable!(),
                 };
+                if !feature_gate_allowed(resolve, package, &f.stability, &f.name)
+                    .context("failed to check feature gate for export")?
+                {
+                    debug!("skipping exported interface [{export_name}] feature gate due to feature gate visibility");
+                    continue;
+                }
                 seen_names.insert(export_name.to_string());
                 funcs.push((export_name.to_lower_camel_case(), f));
             }
-            WorldItem::Interface(id) => {
+            WorldItem::Interface { id, stability } => {
                 let iface_id: String;
                 let (export_name, iface_name): (&str, &str) = match name {
                     WorldKey::Name(export_name) => (export_name, export_name),
@@ -162,6 +231,14 @@ pub fn ts_bindgen(
                         (iface_id.as_ref(), iface)
                     }
                 };
+
+                if !feature_gate_allowed(resolve, package, stability, iface_name)
+                    .context("failed to check feature gate for export")?
+                {
+                    debug!("skipping exported interface [{export_name}] feature gate due to feature gate visibility");
+                    continue;
+                }
+
                 seen_names.insert(export_name.to_string());
                 let local_name = bindgen.export_interface(
                     resolve,
@@ -222,7 +299,7 @@ pub fn ts_bindgen(
         bindgen.src.push_str(&bindgen.export_object);
     }
 
-    if opts.tla_compat && matches!(opts.instantiation, None) {
+    if opts.tla_compat && opts.instantiation.is_none() {
         uwriteln!(
             bindgen.src,
             "
@@ -257,10 +334,15 @@ pub fn ts_bindgen(
                      * on the web, for example.
                      */
                     export function instantiate(
-                        getCoreModule: (path: string) => Promise<WebAssembly.Module>,
+                        getCoreModule: (path: string) => WebAssembly.Module,
                         imports: ImportObject,
-                        instantiateCore?: (module: WebAssembly.Module, imports: Record<string, any>) => Promise<WebAssembly.Instance>
-                    ): Promise<{camel}>;
+                        instantiateCore?: (module: WebAssembly.Module, imports: Record<string, any>) => WebAssembly.Instance
+                    ): {camel};
+                    export function instantiate(
+                        getCoreModule: (path: string) => WebAssembly.Module | Promise<WebAssembly.Module>,
+                        imports: ImportObject,
+                        instantiateCore?: (module: WebAssembly.Module, imports: Record<string, any>) => WebAssembly.Instance | Promise<WebAssembly.Instance>
+                    ): {camel} | Promise<{camel}>;
                 ",
             )
         }
@@ -301,6 +383,7 @@ pub fn ts_bindgen(
     }
 
     files.push(&format!("{name}.d.ts"), bindgen.src.as_bytes());
+    Ok(())
 }
 
 impl TsBindgen {
@@ -312,7 +395,7 @@ impl TsBindgen {
         files: &mut Files,
     ) -> String {
         // in case an imported type is used as an exported type
-        let local_name = self.generate_interface(name, resolve, id, files);
+        let local_name = self.generate_interface(name, resolve, id, files, false);
         uwriteln!(
             self.import_object,
             "{}: typeof {local_name},",
@@ -332,7 +415,7 @@ impl TsBindgen {
             if iface_name == "*" {
                 uwrite!(self.import_object, "{}: ", maybe_quote_id(import_name));
                 let name = resolve.interfaces[id].name.as_ref().unwrap();
-                let local_name = self.generate_interface(name, resolve, id, files);
+                let local_name = self.generate_interface(name, resolve, id, files, false);
                 uwriteln!(self.import_object, "typeof {local_name},",);
                 return;
             }
@@ -340,7 +423,7 @@ impl TsBindgen {
         uwriteln!(self.import_object, "{}: {{", maybe_quote_id(import_name));
         for (iface_name, &id) in ifaces {
             let name = resolve.interfaces[id].name.as_ref().unwrap();
-            let local_name = self.generate_interface(name, resolve, id, files);
+            let local_name = self.generate_interface(name, resolve, id, files, false);
             uwriteln!(
                 self.import_object,
                 "{}: typeof {local_name},",
@@ -358,8 +441,8 @@ impl TsBindgen {
         _files: &mut Files,
     ) {
         uwriteln!(self.import_object, "{}: {{", maybe_quote_id(import_name));
-        let mut gen = self.ts_interface(resolve, false);
-        gen.ts_func(func, true, false);
+        let mut gen = TsInterface::new(resolve, false, &self.configuration);
+        gen.ts_func(func, true, false, false);
         let src = gen.finish();
         self.import_object.push_str(&src);
         uwriteln!(self.import_object, "}},");
@@ -373,7 +456,7 @@ impl TsBindgen {
         files: &mut Files,
         instantiation: bool,
     ) -> String {
-        let local_name = self.generate_interface(export_name, resolve, id, files);
+        let local_name = self.generate_interface(export_name, resolve, id, files, false);
         if instantiation {
             uwriteln!(
                 self.export_object,
@@ -397,14 +480,26 @@ impl TsBindgen {
     fn export_funcs(
         &mut self,
         resolve: &Resolve,
-        _world: WorldId,
+        world: WorldId,
         funcs: &[(String, &Function)],
         _files: &mut Files,
         declaration: bool,
     ) {
-        let mut gen = self.ts_interface(resolve, false);
+        let mut gen = TsInterface::new(resolve, false, &self.configuration);
+        let async_exports = self.async_exports.clone();
+        let id_name = &resolve.worlds[world].name;
         for (_, func) in funcs {
-            gen.ts_func(func, false, declaration);
+            let func_name = &func.name;
+            let is_async = async_exports.contains(func_name)
+                || async_exports.contains(&format!("{id_name}#{func_name}"))
+                || id_name
+                    .find('@')
+                    .map(|i| {
+                        async_exports
+                            .contains(&format!("{}#{func_name}", id_name.get(0..i).unwrap()))
+                    })
+                    .unwrap_or(false);
+            gen.ts_func(func, false, declaration, is_async);
         }
         let src = gen.finish();
         self.export_object.push_str(&src);
@@ -416,7 +511,16 @@ impl TsBindgen {
         resolve: &Resolve,
         id: InterfaceId,
         files: &mut Files,
+        is_world_export: bool,
     ) -> String {
+        let iface = resolve
+            .interfaces
+            .get(id)
+            .expect("unexpectedly missing interface in resolve");
+        let package = resolve
+            .packages
+            .get(iface.package.expect("missing package on interface"))
+            .expect("unexpectedly missing package");
         let id_name = resolve.id_of(id).unwrap_or_else(|| name.to_string());
         let goal_name = interface_goal_name(&id_name);
         let goal_name_kebab = goal_name.to_kebab_case();
@@ -429,27 +533,65 @@ impl TsBindgen {
         let local_name = local_name.to_upper_camel_case();
 
         if !local_exists {
-            uwriteln!(
-                self.src,
-                "import {{ {} }} from './{}.js';",
-                if camel == local_name {
-                    camel.to_string()
-                } else {
-                    format!("{camel} as {local_name}")
-                },
-                &file_name[0..file_name.len() - 5]
-            );
+            // TypeScript doesn't work with empty namespaces, so we don't import in this case,
+            // just define them as empty.
+            let is_empty_interface = resolve.interfaces[id].functions.is_empty()
+                && resolve.interfaces[id]
+                    .types
+                    .iter()
+                    .all(|(_, ty)| !matches!(resolve.types[*ty].kind, TypeDefKind::Resource));
+            if is_empty_interface {
+                uwriteln!(self.src, "declare const {local_name}: {{}};");
+            } else {
+                uwriteln!(
+                    self.src,
+                    "import {{ {} }} from './{}.js';",
+                    if camel == local_name {
+                        camel.to_string()
+                    } else {
+                        format!("{camel} as {local_name}")
+                    },
+                    &file_name[0..file_name.len() - 5]
+                );
+            }
         }
 
         if iface_exists {
             return local_name;
         }
 
-        let mut gen = self.ts_interface(resolve, false);
+        let async_funcs = if is_world_export {
+            self.async_exports.clone()
+        } else {
+            self.async_imports.clone()
+        };
 
-        uwriteln!(gen.src, "export namespace {camel} {{");
+        let module_or_namespace = if self.guest {
+            format!("declare module '{id_name}' {{")
+        } else {
+            format!("export namespace {camel} {{")
+        };
+
+        let mut gen = TsInterface::new(resolve, false, &self.configuration);
+
+        uwriteln!(gen.src, "{module_or_namespace}");
         for (_, func) in resolve.interfaces[id].functions.iter() {
-            gen.ts_func(func, false, true);
+            // Ensure that the function  the world item for stability guarantees and exclude if they do not match
+            if !feature_gate_allowed(resolve, package, &func.stability, &func.name)
+                .expect("failed to check feature gate for function")
+            {
+                continue;
+            }
+            let func_name = &func.name;
+            let is_async = is_world_export && async_funcs.contains(func_name)
+                || async_funcs.contains(&format!("{id_name}#{func_name}"))
+                || id_name
+                    .find('@')
+                    .map(|i| {
+                        async_funcs.contains(&format!("{}#{func_name}", id_name.get(0..i).unwrap()))
+                    })
+                    .unwrap_or(false);
+            gen.ts_func(func, false, true, is_async);
         }
         for (_, type_id) in resolve.interfaces[id].types.iter() {
             let ty = &resolve.types[*type_id];
@@ -519,10 +661,6 @@ impl TsBindgen {
 
         local_name
     }
-
-    fn ts_interface<'b>(&'b mut self, resolve: &'b Resolve, is_root: bool) -> TsInterface<'b> {
-        TsInterface::new(resolve, is_root, &self.configuration)
-    }
 }
 
 impl<'a> TsInterface<'a> {
@@ -535,6 +673,7 @@ impl<'a> TsInterface<'a> {
             local_names: LocalNames::default(),
             variant_member_bodies: BTreeMap::new(),
             resolve,
+            has_constructor: false,
             needs_ty_option: false,
             needs_ty_result: false,
             configuration,
@@ -542,18 +681,30 @@ impl<'a> TsInterface<'a> {
     }
 
     fn finish(mut self) -> Source {
-        for (resource, source) in self.resources.iter() {
+        for (resource, source) in self.resources {
             let class_name = resource.to_upper_camel_case();
-            if let Some(resource_docs) = self.resource_docs.get(resource) {
+            if let Some(resource_docs) = self.resource_docs.get(&resource) {
                 uwrite!(self.src, "\n");
                 render_docs(&mut self.src, resource_docs);
             }
 
-            uwriteln!(self.src, "export class {class_name} {{",);
+            uwriteln!(
+                self.src,
+                "\nexport class {} {{",
+                class_name
+            );
+            if !source.has_constructor {
+                uwriteln!(self.src, "/**");
+                uwriteln!(self.src, " * This type does not have a public constructor.");
+                uwriteln!(self.src, " */");
+                uwriteln!(self.src, "private constructor();");
+            }
+
             if let Some(body) = self.variant_member_bodies.get(&class_name) {
                 self.src.push_str(body);
                 self.src.push_str("\n");
             }
+
             self.src.push_str(&source.src);
             uwriteln!(self.src, "}}")
         }
@@ -580,8 +731,11 @@ impl<'a> TsInterface<'a> {
                 TypeDefKind::Result(r) => self.type_result(*id, name, r, &ty.docs),
                 TypeDefKind::List(t) => self.type_list(*id, name, t, &ty.docs),
                 TypeDefKind::Type(t) => self.type_alias(*id, name, t, Some(iface_id), &ty.docs),
-                TypeDefKind::Future(_) => todo!("generate for future"),
-                TypeDefKind::Stream(_) => todo!("generate for stream"),
+                TypeDefKind::Future(_) => todo!("(async impl) generate for future"),
+                TypeDefKind::Stream(_) => todo!("(async impl) generate for stream"),
+                TypeDefKind::ErrorContext { .. } => {
+                    todo!("(async impl) generate for error-context")
+                }
                 TypeDefKind::Unknown => unreachable!(),
                 TypeDefKind::Resource => {}
                 TypeDefKind::Handle(_) => todo!(),
@@ -651,6 +805,7 @@ impl<'a> TsInterface<'a> {
                         }
                         panic!("anonymous resource handle");
                     }
+                    TypeDefKind::ErrorContext => todo!("(async impl) anonymous error-context)"),
                 }
             }
         }
@@ -668,8 +823,9 @@ impl<'a> TsInterface<'a> {
             Some("Uint8Array") => self.src.push_str("Uint8Array"),
             Some(ty) => self.src.push_str(ty),
             None => {
+                self.src.push_str("Array<");
                 self.print_ty(ty);
-                self.src.push_str("[]");
+                self.src.push_str(">");
             }
         }
     }
@@ -685,7 +841,7 @@ impl<'a> TsInterface<'a> {
         self.src.push_str("]");
     }
 
-    fn ts_func(&mut self, func: &Function, default: bool, declaration: bool) {
+    fn ts_func(&mut self, func: &Function, default: bool, declaration: bool, is_async: bool) {
         let function_as_getter = self
             .configuration
             .get(&self.resolve, func)
@@ -747,11 +903,15 @@ impl<'a> TsInterface<'a> {
             func.item_name().to_lower_camel_case()
         };
 
+        let maybe_async = if is_async { "async " } else { "" };
+
         if declaration {
             match func.kind {
                 FunctionKind::Freestanding => {
                     if is_js_identifier(&out_name) {
-                        iface.src.push_str(&format!("export function {out_name}"));
+                        iface
+                            .src
+                            .push_str(&format!("export {maybe_async}function {out_name}"));
                     } else {
                         let (local_name, _) = iface.local_names.get_or_create(&out_name, &out_name);
                         iface
@@ -759,32 +919,45 @@ impl<'a> TsInterface<'a> {
                             .push_str(&format!("export {{ {local_name} as {out_name} }};\n"));
                         iface
                             .src
-                            .push_str(&format!("declare function {local_name}"));
+                            .push_str(&format!("declare {maybe_async}function {local_name}"));
                     };
                 }
                 FunctionKind::Method(_) => {
                     let getter = if function_as_getter { "get " } else { "" };
                     if is_js_identifier(&out_name) {
-                        iface.src.push_str(&format!("{getter}{out_name}"));
+                        if function_as_getter {
+                            iface.src.push_str(&format!("{getter}{out_name}"));
+                        } else {
+                            iface.src.push_str(&format!("{maybe_async}{out_name}"));
+                        }
                     } else {
-                        iface.src.push_str(&format!("{getter}'{out_name}'"));
+                        if function_as_getter {
+                            iface.src.push_str(&format!("{getter}'{out_name}'"));
+                        } else {
+                            iface.src.push_str(&format!("{maybe_async}'{out_name}'"));
+                        }
                     }
                 }
                 FunctionKind::Static(_) => {
                     if is_js_identifier(&out_name) {
-                        iface.src.push_str(&format!("static {out_name}"))
+                        iface
+                            .src
+                            .push_str(&format!("static {maybe_async}{out_name}"))
                     } else {
-                        iface.src.push_str(&format!("static '{out_name}'"))
+                        iface
+                            .src
+                            .push_str(&format!("static {maybe_async}'{out_name}'"))
                     }
                 }
-                FunctionKind::Constructor(_) => iface.src.push_str("constructor"),
+                FunctionKind::Constructor(_) => {
+                    iface.has_constructor = true;
+                    iface.src.push_str("constructor");
+                }
             }
+        } else if is_js_identifier(&out_name) {
+            iface.src.push_str(&format!("{maybe_async}{out_name}"));
         } else {
-            if is_js_identifier(&out_name) {
-                iface.src.push_str(&out_name);
-            } else {
-                iface.src.push_str(&format!("'{out_name}'"));
-            }
+            iface.src.push_str(&format!("{maybe_async}'{out_name}'"));
         }
 
         let end_character = if declaration { ';' } else { ',' };
@@ -821,6 +994,10 @@ impl<'a> TsInterface<'a> {
         }
         iface.src.push_str(": ");
 
+        if is_async {
+            iface.src.push_str("Promise<");
+        }
+
         if let Some((ok_ty, _)) = func.results.throws(iface.resolve) {
             iface.print_optional_ty(ok_ty);
         } else {
@@ -839,6 +1016,12 @@ impl<'a> TsInterface<'a> {
                 }
             }
         }
+
+        if is_async {
+            // closes `Promise<>`
+            iface.src.push_str(">");
+        }
+
         iface.src.push_str(format!("{}\n", end_character).as_str());
     }
 
@@ -1021,6 +1204,7 @@ impl<'a> TsInterface<'a> {
                                 }
                             })
                             .unwrap_or(body);
+
                         self.variant_member_bodies
                             .insert(outer_class_name.clone(), new_body);
                     }
@@ -1170,7 +1354,7 @@ impl<'a> TsInterface<'a> {
         let type_name = name.to_upper_camel_case();
         match owner_not_parent {
             Some(owned_interface_name) => {
-                let orig_id = dealias(&self.resolve, id);
+                let orig_id = dealias(self.resolve, id);
                 let orig_name = self.resolve.types[orig_id]
                     .name
                     .as_ref()

@@ -262,7 +262,7 @@ class OutgoingRequest {
       if (
         extra.length ||
         (port !== undefined &&
-          (portNum.toString() !== port || portNum > 9999)) ||
+          (portNum.toString() !== port || portNum > 65535)) ||
         !host.match(/^[a-zA-Z0-9-.]+$/)
       )
         throw undefined;
@@ -540,7 +540,7 @@ class Fields {
     }
     try {
       validateHeaderValue(name, new TextDecoder().decode(value));
-    } catch (e) {
+    } catch {
       throw { tag: "invalid-syntax" };
     }
     const lowercased = name.toLowerCase();

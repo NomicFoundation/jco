@@ -95,7 +95,7 @@ export interface DescriptorFlags {
    */
   dataIntegritySync?: boolean,
   /**
-   * Requests that reads be performed at the same level of integrety
+   * Requests that reads be performed at the same level of integrity
    * requested for writes. This is similar to `O_RSYNC` in POSIX.
    * 
    * The precise semantics of this operation have not yet been defined for
@@ -421,7 +421,7 @@ export class Descriptor {
   * May fail with an error-code describing why the file cannot be appended.
   * 
   * Note: This allows using `write-stream`, which is similar to `write` with
-  * `O_APPEND` in in POSIX.
+  * `O_APPEND` in POSIX.
   */
   appendViaStream(): OutputStream;
   /**
@@ -569,12 +569,6 @@ export class Descriptor {
   /**
   * Open a file or directory.
   * 
-  * The returned descriptor is not guaranteed to be the lowest-numbered
-  * descriptor not currently open/ it is randomized to prevent applications
-  * from depending on making assumptions about indexes, since this is
-  * error-prone in multi-threaded contexts. The returned descriptor is
-  * guaranteed to be less than 2**31.
-  * 
   * If `flags` contains `descriptor-flags::mutate-directory`, and the base
   * descriptor doesn't have `descriptor-flags::mutate-directory` set,
   * `open-at` fails with `error-code::read-only`.
@@ -645,7 +639,7 @@ export class Descriptor {
   * replaced. It may also include a secret value chosen by the
   * implementation and not otherwise exposed.
   * 
-  * Implementations are encourated to provide the following properties:
+  * Implementations are encouraged to provide the following properties:
   * 
   * - If the file is not modified or replaced, the computed hash value should
   * usually not change.

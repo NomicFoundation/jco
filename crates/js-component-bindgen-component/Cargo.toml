@@ -17,6 +17,6 @@ anyhow = { workspace = true }
 js-component-bindgen = { path = "../js-component-bindgen" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-wasmtime-environ = { workspace = true }
+wasmtime-environ = { workspace = true, features = [ "component-model" ] }
 wit-bindgen = { workspace = true }
-wat = { workspace = true }
+wat = { workspace = true, features = [ "component-model" ]}
