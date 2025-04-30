@@ -534,17 +534,11 @@ impl Bindgen for FunctionBindgen<'_> {
                 let op = &operands[0];
                 uwriteln!(self.src, "var variant{tmp} = {op};");
 
-                if self
+                if !self
                     .configuration
                     .get(resolve, ty)
                     .variant_as_direct_union_of_resource_classes()
                 {
-                    if let Some(_) = Type::Id(*ty)
-                        .variant_case_type_defs_where_they_are_all_handles(self.resolve)
-                    {
-                        unimplemented!("Lowering a variant as direct union of resource classes");
-                    }
-                } else {
                     for i in 0..result_types.len() {
                         uwriteln!(self.src, "let variant{tmp}_{i};");
                         results.push(format!("variant{}_{}", tmp, i));
