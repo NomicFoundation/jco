@@ -58,6 +58,7 @@
   },
   "homepage": "https://github.com/bytecodealliance/jco#readme",
   "scripts": {
+    "setup:slang": "rustup install --no-self-update --profile minimal '1.82.0' && rustup target add --toolchain '1.82.0' 'wasm32-wasip1'", 
     "build": "cargo xtask build debug",
     "build:release": "cargo xtask build release",
     "build:types:preview2-shim": "cargo xtask generate wasi-types",
