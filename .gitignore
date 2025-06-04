@@ -2,6 +2,7 @@
 *.swp
 *.swo
 node_modules
+.hermit
 /target
 /obj
 /dist
