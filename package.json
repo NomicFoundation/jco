@@ -1,10 +1,9 @@
 {
-  "name": "@bytecodealliance/jco",
-  "version": "1.9.1",
-  "description": "JavaScript tooling for working with WebAssembly Components",
-  "author": "Guy Bedford",
+  "name": "@ignored/slang-jco",
+  "__slang_release_comment__": "Use the same upstream version, adding the '-slang' suffix, and incrementing the build number '.N' as needed.", 
+  "version": "1.9.1-slang.1",
   "bin": {
-    "jco": "src/jco.js"
+    "slang-jco": "src/jco.js"
   },
   "exports": {
     ".": {
@@ -58,14 +57,15 @@
   },
   "homepage": "https://github.com/bytecodealliance/jco#readme",
   "scripts": {
-    "setup:slang": "rustup install --no-self-update --profile minimal '1.82.0' && rustup target add --toolchain '1.82.0' 'wasm32-wasip1'", 
     "build": "cargo xtask build debug",
     "build:release": "cargo xtask build release",
     "build:types:preview2-shim": "cargo xtask generate wasi-types",
     "lint": "eslint -c eslintrc.cjs src/**/*.js packages/*/lib/**/*.js",
     "test:lts": "mocha -u tdd test/test.js --timeout 240000",
     "test": "node --experimental-wasm-jspi --stack-trace-limit=100 node_modules/mocha/bin/mocha.js -u tdd test/test.js --timeout 240000",
-    "prepublishOnly": "cargo xtask build release && npm run test"
+
+    "slang:setup": "./bin/npm ci && ./bin/rustup install --no-self-update --profile 'minimal' '1.82.0' && ./bin/rustup target add --toolchain '1.82.0' 'wasm32-wasip1'", 
+    "slang:build": "./bin/npm run 'build' && ./bin/npm run 'build:release'"
   },
   "files": [
     "lib",
