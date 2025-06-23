@@ -1,0 +1,18 @@
+name: slang-publish
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "nomic"
+
+jobs:
+  publish:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - run: "./bin/npm run slang:setup"
+      - run: "./bin/npm run slang:build"
+      - run: "./bin/npm publish"
+        env:
+          NPM_TOKEN: "${{ secrets.NPM_TOKEN }}"
