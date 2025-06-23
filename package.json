@@ -56,6 +56,10 @@
     "url": "https://github.com/bytecodealliance/jco/issues"
   },
   "homepage": "https://github.com/bytecodealliance/jco#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "scripts": {
     "build": "cargo xtask build debug",
     "build:release": "cargo xtask build release",
